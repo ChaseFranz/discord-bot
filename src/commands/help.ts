@@ -1,0 +1,60 @@
+import { CommandInteraction, EmbedBuilder } from 'discord.js';
+import { Logger } from 'winston';
+
+interface IHelpCommand {
+  data: { name: string; description: string; options?: { name: string; description: string }[] };
+  execute(interaction: CommandInteraction, logger: Logger, client: any): Promise<void>;
+}
+
+class HelpCommand implements IHelpCommand {
+  data = {
+    name: 'help',
+    description: 'List all available commands with details',
+  };
+
+  usage = '/help - Displays this help message with usage examples.';
+
+  async execute(interaction: CommandInteraction, logger: Logger, client: any): Promise<void> {
+    const helpEmbed = new EmbedBuilder()
+      .setTitle('Help - Available Commands')
+      .setColor(0x0099ff)
+      .setFooter({ text: 'Use these commands to interact with the bot.' })
+      .setTimestamp();
+
+
+      if (client.commands.size === 0) {
+        logger.error('No commands found.');
+        await interaction.editReply({ content: 'No commands found.' });
+        return;
+      } else {
+        logger.info('test');
+      }
+
+    const fields = client.commands.map((command: any) => {
+      const description = command.data.description || "No description provided.";
+
+      if (!command.data.options){
+        logger.info('No options found.');
+      } else{
+        logger.info('Options found.');
+        logger.info(command.data.options);
+      }
+
+      const optionsText = (command.data.options || []).map((opt: any) => `**${opt.name}**: ${opt.description}`).join("\n") || "";
+      const usage = command.usage || "No usage example provided.";
+      const fieldValue = `${description}\n${optionsText ? "\n**Options:**\n" + optionsText : ""}\n**Usage:** ${usage}`;
+
+      return {
+        name: `/${command.data.name}`,
+        value: fieldValue,
+      };
+    });
+
+    helpEmbed.addFields(fields);
+
+    logger.info(`User ${interaction.user.tag} requested help.`);
+    await interaction.editReply({ embeds: [helpEmbed] });
+  }
+}
+
+export default new HelpCommand();

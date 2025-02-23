@@ -2,6 +2,13 @@
 node_modules/
 .env
 config.js
+recordings/
+*.mp3
+*.pcm
+*.wav
 
 # Logs
 *.log
+
+# Build artifacts
+/dist

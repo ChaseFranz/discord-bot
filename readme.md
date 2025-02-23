@@ -1,106 +1,160 @@
 # Discord ChatGPT Bot
-
-A feature-rich Discord bot that integrates ChatGPT for conversational interactions, creative responses, and more. Built using Node.js, discord.js, and OpenAI's GPT-3.5-turbo model, this bot offers modular commands, context menu commands, customization options, and a foundation for future enhancements (such as voice interaction and multi-language support).
+A feature-rich Discord bot that integrates ChatGPT for both conversational and creative interactions. Built with Node.js, discord.js, and OpenAI's GPT-3.5-turbo model, the bot now includes voice integration, dynamic language support, and enhanced customization options – all wrapped in a modular, scalable architecture.
 
 ## Features
 
 - **Text Interaction:**  
-  Chat with ChatGPT using slash commands (`/chat`) with conversation history and custom parameters.
+  Chat with ChatGPT using slash commands (e.g., `/chat`) that maintain conversation history and support custom parameters.
+
+- **Voice Interaction:**  
+  Enable hands-free control with voice commands. The bot supports speech-to-text transcription and text-to-speech responses via integrated voice libraries.
 
 - **Customization:**  
-  Adjust response parameters with the `/customize` command to change the temperature and conversational style.
-
-- **Context Menu Commands:**  
-  - **Describe This User:** Right-click on a user to get a creative profile description.  
-  - **Summarize This Message:** Right-click on a message to receive a concise summary.
+  Adjust response parameters like temperature and conversational style using the `/customize` command.
 
 - **Multi-Language Support:**  
-  Use `/setlanguage` to set your preferred language for system instructions.
+  Switch system language on the fly using `/setlanguage`.
+
+- **Context Menu Commands:**  
+  - **Describe This User:** Right-click on a user to receive a creative profile description.  
+  - **Summarize This Message:** Right-click on a message to generate a one-sentence summary.
 
 - **Enhanced Help:**  
-  A dynamic `/help` command displays detailed usage examples for all commands.
+  A dynamic `/help` command lists all commands and usage examples.
 
 - **Modular Structure:**  
-  Commands and event handlers are split into separate modules for maintainability and scalability.
+  Commands and event handlers are organized into separate modules for easy maintenance and scalability.
 
 ## Project Structure
-- todo
+
+- `commands/` – Contains all the slash and context menu commands.
+- `events/` – Houses event listeners.
+- `dist/` – Compiled JavaScript output.
+- Other configuration and utility files.
 
 ## Installation
-1. **Clone the repository**
-```bash
-   git clone https://github.com/yourusername/discord-bot.git
-   cd discord-bot
-```
 
-2. Install Dependencies
-Ensure you have [Node.js](https://nodejs.org/en) installed, then run:
-```bash
+1. **Clone the Repository:**
+
+    ```bash
+    git clone https://github.com/yourusername/discord-bot.git
+    cd discord-bot
+    ```
+
+2. **Install Dependencies:**
+
+    Ensure you have [Node.js](https://nodejs.org/en) installed, then run:
+
+    ```bash
     npm install
-```
+    ```
 
-3. Configure the bot
-Create a `config.js` file in the root directory with your credentials. For example:
-```js
-export default {
-  openaiApiKey: "YOUR_OPENAI_API_KEY_HERE",
-  discordBotToken: "YOUR_DISCORD_BOT_TOKEN_HERE",
-  clientId: "YOUR_DISCORD_APPLICATION_ID_HERE",
-  guildId: "YOUR_TEST_GUILD_ID_HERE"
-};
-```
+3. **Configure the Bot:**
 
-4. Run the bot
-```bash
-    node index.js
-```
+    Create a [.env](http://_vscodecontentref_/0) file in the root directory with your credentials and configuration options. For example:
+
+    ```.env
+    OPENAI_API_KEY=YOUR_OPENAI_API_KEY_HERE
+    DISCORD_BOT_TOKEN=YOUR_DISCORD_BOT_TOKEN_HERE
+    CLIENT_ID=YOUR_DISCORD_APPLICATION_ID_HERE
+    GUILD_ID=YOUR_TEST_GUILD_ID_HERE
+    OPENAI_MODEL=gpt-3.5-turbo
+
+    # AWS configuration (if using AWS services)
+    AWS_ACCESS_KEY_ID=YOUR_ACCESS_KEY
+    AWS_SECRET_ACCESS_KEY=YOUR_SECRET_KEY
+    AWS_REGION=YOUR_AWS_REGION
+    ```
+
+    Make sure to load these configurations in your application (e.g., using the `dotenv` package):
+
+    ```js
+    // filepath: /c:/Users/Chase/discord-bot/index.js
+    require('dotenv').config();
+    // ...existing code...
+    ```
+
+4. **Configure TypeScript:**
+
+    A [tsconfig.json](http://_vscodecontentref_/1) file is provided to compile both `.ts` and `.js` files. Adjust compiler options as required.
+
+## Building and Running
+
+1. **Build the Project:**
+
+    Compile the TypeScript files into JavaScript by running:
+
+    ```bash
+    npm run build
+    ```
+
+    This outputs the compiled files into the [dist](http://_vscodecontentref_/2) directory.
+
+2. **Run the Bot:**
+
+    Start the bot with:
+
+    ```bash
+    npm run start
+    ```
 
 ## Usage
-- **Chat with ChatGPT:**
-Use the `/chat` command followed by your prompt.
-Example:
-/chat Tell me a funny joke about cats.
 
-- **Customize Responses:**
-Use the `/customize` command to adjust the response temperature and style. Example: `/customize temperature: 0.8 style: casual`
+- **Chat with ChatGPT:**  
+  Invoke `/chat` followed by your prompt.  
+  _Example:_  
+  `/chat Tell me a funny joke about cats.`
 
-- **Set Language:**
-Use `/setlanguage` to choose a language for system instructions.
-Example:
-`/setlanguage language: es`
+- **Customize Responses:**  
+  Use `/customize` to adjust response parameters.  
+  _Example:_  
+  `/customize temperature: 0.8 style: casual`
 
-- **Reset Conversation:**
-Use `/reset` to clear your conversation context.
+- **Voice Interaction:**  
+  If enabled, use voice commands to interact with the bot. Refer to the help docs or `/help` for usage details.
 
-- **Context Menu Commands:**
-    
-    - Right-click on a user and select "Describe This User" to get a creative description.
-    
-    - Right-click on a message and select "Summarize This Message" to get a one-sentence summary.
-    
-- Get Help: Use `/help` to see a dynamic list of all available commands with usage examples.
+- **Set Language:**  
+  Switch system language via `/setlanguage`.  
+  _Example:_  
+  `/setlanguage language: es`
+
+- **Reset Conversation:**  
+  Clear conversation history by using `/reset`.
+
+- **Context Menu Commands:**  
+  - Right-click on a user and select "Describe This User" for a creative profile.  
+  - Right-click on a message and select "Summarize This Message" for a concise summary.
+
+- **Help:**  
+  Use `/help` to display all available commands with usage examples.
 
 ## Development
-- **Modular Structure:**
-Commands and events are loaded dynamically from the `commands/` and `events/` folders, respectively.
 
-- **Logging:**
-The project uses [Winston](https://www.npmjs.com/package/winston) for structured logging.
+- **Modular Loading:**  
+  Commands and event handlers are dynamically loaded from the `commands/` and `events/` directories.
 
-- **Customization**: User settings (like temperature, style, and language) are stored in-memory for each user and channel combination. Consider adding persistent storage if you plan to scale further.
+- **Logging:**  
+  The project uses [Winston](https://www.npmjs.com/package/winston) for structured logging.
+
+- **User Customization:**  
+  In-memory storage is currently used for user settings (like temperature, style, and language). For larger deployments, consider integrating persistent storage.
+
 
 ## Future Enhancements
-- **Voice Interaction:**
-Integrate @discordjs/voice for voice commands, speech-to-text transcription, and text-to-speech responses.
 
-- **Persistent Storage:**
-Use a database or file system for saving conversation histories and user settings across sessions.
+- **Analytics & Monitoring:**  
+  Integrate advanced monitoring services such as AWS CloudWatch for usage analytics.
 
-- **Advanced Analytics & Monitoring:**
-Integrate usage analytics and logging services such as CloudWatch.
+- **Persistent Storage:**  
+  Implement a database layer to store conversation history and user settings across sessions.
+
+- **Additional Customization:**  
+  Further refine interactions with additional customization options and NLP enhancements.
 
 ## Contributing
-Contributions are welcome! Please open an issue or submit a pull request for any improvements or new features.
+
+Contributions are welcome! Please submit an issue or open a pull request for any improvements or new features.
 
 ## License
-[MIT License]()
+
+MIT License
