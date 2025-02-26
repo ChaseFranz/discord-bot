@@ -100,6 +100,8 @@ A feature-rich Discord bot that integrates ChatGPT for both conversational and c
 
 ## Usage
 
+### Chat Commands
+
 - **Chat with ChatGPT:**  
   Invoke `/chat` followed by your prompt.  
   _Example:_  
@@ -128,6 +130,23 @@ A feature-rich Discord bot that integrates ChatGPT for both conversational and c
 - **Help:**  
   Use `/help` to display all available commands with usage examples.
 
+### Music Commands
+
+- **Play:**
+  - Plays a song from YouTube. If there is no active music queue in the guild, the bot will join the user's voice channel and begin playback. Songs are added to a queue for continuous playback.  
+  _Example:_
+  `/play` url: https://www.youtube.com/watch?v=example`
+
+- **Skip:**
+  - Skips the currently playing song and advances to the next song in the queue.  
+  _Example:_
+  `skip`
+
+- **Stop:**
+  - Stops music playback, clears the music queue, and disconnects the bot from the voice channel.  
+  _Example:_
+  `stop`
+
 ## Development
 
 - **Modular Loading:**  
@@ -150,6 +169,11 @@ A feature-rich Discord bot that integrates ChatGPT for both conversational and c
 
 - **Additional Customization:**  
   Further refine interactions with additional customization options and NLP enhancements.
+
+- **Command integration with GPT**
+  It was my initial goal to build a generic integration between this GPT bot and other server bots through server bot registration and LLM _magic_. Sadly this isn't possible and violates discord TOS so instead I will have to include any useful bot commands for integration in this bot.
+
+  Goal #1 is a music player with voice and text prompting integration with GPT :D
 
 ## Contributing
 
