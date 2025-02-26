@@ -20,7 +20,8 @@
     "dotenv": "^16.4.7",
     "openai": "^4.85.4",
     "prism-media": "^1.3.5",
-    "winston": "^3.17.0"
+    "winston": "^3.17.0",
+    "ytdl-core": "npm:@distube/ytdl-core@^4.16.4"
   },
   "devDependencies": {
     "@types/node": "^22.13.5",

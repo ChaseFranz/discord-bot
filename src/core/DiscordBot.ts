@@ -20,6 +20,9 @@ import ReadyEvent from '../events/ready.js';
 import InteractionCreateEvent from '../events/interactionCreate.js';
 import JoinVoiceChannelCommand from '../commands/joinVoiceChannel.js';
 import LeaveVoiceChannelCommand from '../commands/leaveVoiceChannel.js';
+import play from '../commands/music/play.js';
+import skip from '../commands/music/skip.js';
+import stop from '../commands/music/stop.js';
 
 export interface HistoryEntry {
   role: string;
@@ -114,7 +117,9 @@ export class DiscordBot {
       ContextChatCommand,
       ChatCommand,
       JoinVoiceChannelCommand(this.logger),
-      LeaveVoiceChannelCommand
+      play,
+      skip,
+      stop,
     ];
 
     for (const command of commands) {
