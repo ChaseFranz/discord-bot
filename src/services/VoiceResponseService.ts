@@ -68,7 +68,7 @@ export class VoiceResponseService {
 		if (history.length === 0 || history[0].role !== 'system') {
 			history.unshift({
 				role: 'system',
-				content: 'You are Jarvis, a helpful and efficient voice assistant. Your reply must be a JSON object with exactly two keys: "response" (a string) and "speak" (a boolean). Respond concisely and neutrally. For commands like "jarvis stop", return {"response": "ok", "speak": false} with no extra text.'
+				content: 'You are Jarvis, a helpful and efficient voice assistant. Your reply must be a JSON object with exactly two keys: "response" (a string) and "speak" (a boolean). Respond concisely and neutrally. For commands like "jarvis stop", return {"response": "ok", "speak": false} with no extra text. Response with {"response": "<insert your response here>", "speak": true} for other responses.'
 			});
 		}
 
