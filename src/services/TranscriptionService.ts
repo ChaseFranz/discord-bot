@@ -1,9 +1,9 @@
-import { createReadStream, unlinkSync, statSync } from 'fs';
-import { spawn } from 'child_process';
+import { createReadStream } from 'fs';
 import dotenv from 'dotenv';
 import { Logger } from 'winston';
 import { VoiceResponseService } from './VoiceResponseService.js';
 import { deleteFile } from '../utils/fileUtils.js';
+import { KeywordDetector } from '../utils/keywordDetection.js';
 
 export class TranscriptionService {
 	private ENABLE_TTS_STT: boolean;
@@ -33,7 +33,9 @@ export class TranscriptionService {
 				this.logger.info(`Transcription for user ${userId}: "${transcription.text}"`);
 			}
 
-			if (transcription.text.toLowerCase().includes('jarvis')) {
+			const detector = new KeywordDetector();
+			
+			if (detector.containsKeyword(transcription.text.toLowerCase())) {
 				this.logger.info('Keyword "Jarvis" detected.');
 				const voiceResponseService = VoiceResponseService.getInstance(this.logger, this.openaiVoiceModel);
 				const voiceResponse = await voiceResponseService.generateResponse(transcription.text, userId);
