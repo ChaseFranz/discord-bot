@@ -5,14 +5,16 @@ import { Logger } from 'winston';
 import { VoiceResponseService } from './VoiceResponseService.js';
 import { deleteFile } from '../utils/fileUtils.js';
 
-dotenv.config();
-const ENABLE_TTS_STT = true;
-
 export class TranscriptionService {
-	constructor(private logger: Logger) {}
+	private ENABLE_TTS_STT: boolean;
+
+	constructor(private logger: Logger, private openaiVoiceModel: string) {
+		dotenv.config();
+		this.ENABLE_TTS_STT = true;
+	}
 
 	async processAudio(filePath: string, connection: any, userId: string) {
-		if (!ENABLE_TTS_STT) return;
+		if (!this.ENABLE_TTS_STT) return;
 		this.logger.info(`Processing audio file: ${filePath}`);
 		const OpenAI = (await import('openai')).default;
 		const openai = new OpenAI();
@@ -33,7 +35,7 @@ export class TranscriptionService {
 
 			if (transcription.text.toLowerCase().includes('jarvis')) {
 				this.logger.info('Keyword "Jarvis" detected.');
-				const voiceResponseService = VoiceResponseService.getInstance(this.logger);
+				const voiceResponseService = VoiceResponseService.getInstance(this.logger, this.openaiVoiceModel);
 				const voiceResponse = await voiceResponseService.generateResponse(transcription.text, userId);
 				this.logger.info(`Generated response: ${JSON.stringify(voiceResponse)}`);
 				if (voiceResponse.speak) {

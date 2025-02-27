@@ -13,7 +13,7 @@ const ENABLE_TTS_STT = true;
 export class RecordingService {
 	private activeRecordings: Set<string> = new Set();
 
-	constructor(private logger: Logger) {}
+	constructor(private logger: Logger, private openaiVoiceModel: string) {}
 
 	startRecording(receiver: any, userId: string, connection: any) {
 		if (this.activeRecordings.has(userId)) {
@@ -87,7 +87,7 @@ export class RecordingService {
 		ffmpeg.on('close', (code) => {
 			if (code === 0) {
 				this.logger.info(`Converted ${pcmPath} to ${wavPath}`);
-				const transcriptionService = new TranscriptionService(this.logger);
+				const transcriptionService = new TranscriptionService(this.logger, this.openaiVoiceModel);
 				transcriptionService.processAudio(wavPath, connection, userId);
 				unlinkSync(pcmPath);
 				this.logger.info(`Deleted PCM file: ${pcmPath}`);

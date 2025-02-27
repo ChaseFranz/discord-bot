@@ -18,6 +18,8 @@ export class InteractionHandler {
   private userSettings: Map<string, any>;
   private cooldowns: Map<string, Map<string, number>>;
   private commands: any;
+  private openaiChatModel: string;
+  private openaiVoiceModel: string;
 
   /**
    * Constructor to initialize the InteractionHandler with the client.
@@ -32,6 +34,8 @@ export class InteractionHandler {
     this.userSettings = custom.userSettings;
     this.cooldowns = custom.cooldowns;
     this.commands = custom.commands;
+    this.openaiChatModel = custom.openaiChatModel;
+    this.openaiVoiceModel = custom.openaiVoiceModel;
   }
 
   /**
@@ -86,7 +90,12 @@ export class InteractionHandler {
       if (!interaction.deferred && !interaction.replied) {
         await interaction.deferReply();
       }
-      await command.execute(interaction, this.conversationHistories, this.openai, this.logger, client, this.userSettings);
+
+      if(interaction.commandName === 'join') {
+        this.logger.info('Executing join command.');
+        this.logger.info(this.logger);
+      }
+      await command.execute(interaction, this.conversationHistories, this.openai, this.logger, client, this.userSettings, this.openaiChatModel, this.openaiVoiceModel);
     } catch (error: any) {
       this.logger.error(`Error executing command ${interaction.commandName}: ${error}`);
       await interaction.editReply('There was an error executing that command.');

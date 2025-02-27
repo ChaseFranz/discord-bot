@@ -1,13 +1,25 @@
 import { SlashCommandBuilder, CommandInteraction, GuildMember } from 'discord.js';
 import { getVoiceConnection } from '@discordjs/voice';
+import { IBotCommand } from './types/DiscordModels';
 
-class LeaveVoiceChannelCommand {
-  data = new SlashCommandBuilder()
-    .setName('leave')
-    .setDescription('Leave the voice channel');
+interface ILeaveVoiceChannelCommand extends IBotCommand {
+  data: SlashCommandBuilder;
+  usage: string;
+  execute(interaction: CommandInteraction): Promise<void>;
+}
 
-  usage = '/leave - Makes the bot leave the current voice channel';
+class LeaveVoiceChannelCommand implements ILeaveVoiceChannelCommand {
+  data: SlashCommandBuilder;
+  usage: string;
 
+  constructor() {
+    this.data = new SlashCommandBuilder()
+      .setName('leave')
+      .setDescription('Leave the voice channel');
+
+    this.usage = '/leave - Makes the bot leave the current voice channel';
+  }
+  
   async execute(interaction: CommandInteraction): Promise<void> {
     const member = interaction.member as GuildMember;
     const voiceChannel = member.voice.channel;

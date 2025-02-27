@@ -1,4 +1,5 @@
 import { Client, Collection } from 'discord.js';
+import OpenAI from 'openai';
 
 /**
  * Extends the `Client` interface from the `discord.js` module.
@@ -28,11 +29,13 @@ declare module 'discord.js' {
     /**
      * An instance of the OpenAI API client or any other related object.
      */
-    openai: any;
+    openai: OpenAI;
 
     /**
      * A logger instance for logging purposes.
      */
     logger: any;
+
+    openaiChatModel: string;
   }
 }

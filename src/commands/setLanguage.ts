@@ -1,10 +1,13 @@
 import { SlashCommandBuilder, SlashCommandOptionsOnlyBuilder } from 'discord.js';
 import { CommandInteraction } from 'discord.js';
+import OpenAI from 'openai';
+import { Logger } from 'winston';
+import { IBotCommand } from './types/DiscordModels';
 
-interface ISetLanguageCommand {
+interface ISetLanguageCommand extends IBotCommand {
   data: SlashCommandOptionsOnlyBuilder;
   usage: string;
-  execute(interaction: CommandInteraction, conversationHistories: Map<string, any>, openai: any, logger: any, client: any, userSettings: Map<string, any>): Promise<void>;
+  execute(interaction: CommandInteraction, conversationHistories: Map<string, any>, openai: OpenAI, logger: any, client: any, userSettings: Map<string, any>): Promise<void>;
 }
 
 class SetLanguageCommand implements ISetLanguageCommand {
@@ -30,7 +33,14 @@ class SetLanguageCommand implements ISetLanguageCommand {
     this.usage = '/setlanguage language: <en|es|fr|de> - e.g., /setlanguage language: es';
   }
 
-  async execute(interaction: CommandInteraction, conversationHistories: Map<string, any>, openai: any, logger: any, client: any, userSettings: Map<string, any>): Promise<void> {
+  async execute(
+    interaction: CommandInteraction, 
+    conversationHistories: Map<string, any>, 
+    openai: OpenAI, 
+    logger: Logger, 
+    client: any, 
+    userSettings: Map<string, any>): Promise<void> {
+      
     if (!interaction.channel) {
         await interaction.reply({ content: 'Channel information is missing.', ephemeral: true });
         return;

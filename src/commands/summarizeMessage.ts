@@ -2,19 +2,24 @@ import { ContextMenuCommandBuilder, ApplicationCommandType, EmbedBuilder, Comman
 import { Logger } from 'winston';
 import OpenAI from 'openai';
 import { OpenAIModel } from './types/openAIModel.js';
+import { IBotCommand } from './types/DiscordModels.js';
 
-interface ISummarizeMessageCommand {
+interface ISummarizeMessageCommand extends IBotCommand {
   data: ContextMenuCommandBuilder;
   usage: string;
   execute(interaction: CommandInteraction, openai: OpenAI, logger: Logger): Promise<void>;
 }
 
 class SummarizeMessageCommand implements ISummarizeMessageCommand {
-  data = new ContextMenuCommandBuilder()
-    .setName('Summarize This Message')
-    .setType(ApplicationCommandType.Message);
-
-  usage = 'Right-click a message and select "Summarize This Message" to get a concise one-sentence summary.';
+  data: ContextMenuCommandBuilder;
+  usage: string;
+  
+  constructor() {
+    this.data = new ContextMenuCommandBuilder()
+      .setName('Summarize This Message')
+      .setType(ApplicationCommandType.Message);
+    this.usage = 'Right-click a message and select "Summarize This Message" to get a concise one-sentence summary.';
+  }
 
   async execute(interaction: MessageContextMenuCommandInteraction, openai: OpenAI, logger: Logger): Promise<void> {
     const targetMessage = interaction.targetMessage;

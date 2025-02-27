@@ -13,6 +13,8 @@ class Config {
   public readonly clientId: string;
   public readonly guildId: string;
   public readonly openaiApiKey: string;
+  public readonly openaiChatModel: string;
+  public readonly openaiVoiceModel: string;
   
   /**
    * Private constructor to prevent direct instantiation.
@@ -24,7 +26,8 @@ class Config {
     this.clientId = process.env.CLIENT_ID || '';
     this.guildId = process.env.GUILD_ID || '';
     this.openaiApiKey = process.env.OPENAI_API_KEY || '';
-
+    this.openaiChatModel = process.env.OPENAI_CHAT_MODEL || 'gpt-3.5-turbo';
+    this.openaiVoiceModel = process.env.OPENAI_VOICE_MODEL || 'gpt-4o-mini';
     this.validate();
   }
 
@@ -56,6 +59,12 @@ class Config {
     }
     if (!this.openaiApiKey) {
       throw new Error('OPENAI_API_KEY is not set in the environment variables.');
+    }
+    if (!this.openaiChatModel) {
+      throw new Error('OPENAI_CHAT_MODEL is not set in the environment variables.');
+    }
+    if (!this.openaiVoiceModel) {
+      throw new Error('OPENAI_VOICE_MODEL is not set in the environment variables.');
     }
   }
 }

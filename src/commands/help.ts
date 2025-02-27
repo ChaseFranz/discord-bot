@@ -1,18 +1,26 @@
-import { CommandInteraction, EmbedBuilder } from 'discord.js';
+import { CommandInteraction, EmbedBuilder, SlashCommandBuilder, SlashCommandOptionsOnlyBuilder } from 'discord.js';
 import { Logger } from 'winston';
+import { IBotCommand } from './types/DiscordModels';
 
-interface IHelpCommand {
-  data: { name: string; description: string; options?: { name: string; description: string }[] };
-  execute(interaction: CommandInteraction, logger: Logger, client: any): Promise<void>;
+interface IHelpCommand extends IBotCommand {
+  data: SlashCommandOptionsOnlyBuilder,
+  usage: string,
+  execute(
+    interaction: CommandInteraction, 
+    logger: Logger, 
+    client: any): Promise<void>;
 }
 
 class HelpCommand implements IHelpCommand {
-  data = {
-    name: 'help',
-    description: 'List all available commands with details',
-  };
+  public data: SlashCommandOptionsOnlyBuilder;
+  public usage: string;
 
-  usage = '/help - Displays this help message with usage examples.';
+  constructor() {
+    this.data = new SlashCommandBuilder()
+      .setName('help')
+      .setDescription('List all available commands with details');
+      this.usage = '/help - Displays this help message with usage examples.';
+  }
 
   async execute(interaction: CommandInteraction, logger: Logger, client: any): Promise<void> {
     const helpEmbed = new EmbedBuilder()
@@ -21,13 +29,10 @@ class HelpCommand implements IHelpCommand {
       .setFooter({ text: 'Use these commands to interact with the bot.' })
       .setTimestamp();
 
-
       if (client.commands.size === 0) {
         logger.error('No commands found.');
         await interaction.editReply({ content: 'No commands found.' });
         return;
-      } else {
-        logger.info('test');
       }
 
     const fields = client.commands.map((command: any) => {

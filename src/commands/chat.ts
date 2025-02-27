@@ -1,23 +1,34 @@
-import { CommandInteraction, EmbedBuilder, SlashCommandBuilder, CommandInteractionOptionResolver, ChannelType, TextChannel } from 'discord.js';
+import { CommandInteraction, EmbedBuilder, SlashCommandBuilder, CommandInteractionOptionResolver, ChannelType, TextChannel, SlashCommandOptionsOnlyBuilder } from 'discord.js';
 import { Logger } from 'winston';
 import OpenAI from 'openai';
 import { OpenAIModel } from './types/openAIModel.js';
+import { IBotCommand } from './types/DiscordModels.js';
 
-class ChatCommand {
-  data = new SlashCommandBuilder()
-    .setName('chat')
-    .setDescription('Have a conversation with ChatGPT')
-    .addStringOption(option =>
-      option
-        .setName('prompt')
-        .setDescription('Your message to ChatGPT')
-        .setRequired(true)
+interface IChatCommand extends IBotCommand{
+  data: SlashCommandOptionsOnlyBuilder;
+  usage: string;
+  execute(interaction: CommandInteraction, conversationHistories: Map<string, any>, openai: OpenAI, logger: Logger, client: any, userSettings: any, openaiChatModel: string, openaiVoiceModel: string): Promise<void>;
+}
+
+class ChatCommand implements IChatCommand {
+  data: SlashCommandOptionsOnlyBuilder;
+  usage: string;
+
+  constructor() {
+    this.data = new SlashCommandBuilder()
+      .setName('chat')
+      .setDescription('Have a conversation with ChatGPT')
+      .addStringOption(option =>
+        option
+          .setName('prompt')
+          .setDescription('Your message to ChatGPT')
+          .setRequired(true)
     );
 
-  usage = '/chat <prompt> - e.g., /chat Tell me a funny joke about cats.';
-  cooldown = 5;
+    this.usage = '/chat <prompt> - e.g., /chat Tell me a funny joke about cats.';
+  }
 
-  async execute(interaction: CommandInteraction, conversationHistories: Map<string, any>, openai: OpenAI, logger: Logger, client: any, userSettings: any): Promise<void> {
+  async execute(interaction: CommandInteraction, conversationHistories: Map<string, any>, openai: OpenAI, logger: Logger, client: any, userSettings: any, openaiChatModel: string, openaiVoiceModel: string): Promise<void> {
     const prompt = (interaction.options as CommandInteractionOptionResolver).getString('prompt')?.trim();
     if (!prompt) {
       await interaction.editReply({ content: 'Your prompt is invalid!'});
@@ -54,7 +65,7 @@ class ChatCommand {
 
     try {
       const response = await openai.chat.completions.create({
-        model: OpenAIModel.GPT_3_5_TURBO,
+        model: openaiChatModel,
         messages: history,
         temperature: settings.temperature,
       });

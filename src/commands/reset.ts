@@ -1,24 +1,35 @@
-import { CommandInteraction, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
+import { CommandInteraction, ActionRowBuilder, ButtonBuilder, ButtonStyle, SlashCommandBuilder, SharedSlashCommand } from 'discord.js';
+import OpenAI from 'openai';
 import { Logger } from 'winston';
+import { IBotCommand } from './types/DiscordModels';
 
-interface IResetCommand {
-  data: {
-    name: string;
-    description: string;
-  };
+interface IResetCommand extends IBotCommand {
+  data: SlashCommandBuilder;
   usage: string;
-  execute(interaction: CommandInteraction, conversationHistories: Map<string, any>, openai: any, logger: Logger): Promise<void>;
+  execute(
+    interaction: CommandInteraction, 
+    conversationHistories: Map<string, any>, 
+    openai: OpenAI, 
+    logger: Logger): Promise<void>;
 }
 
 class ResetCommand implements IResetCommand {
-  data = {
-    name: 'reset',
-    description: 'Reset your conversation context',
-  };
+  data: SlashCommandBuilder;
+  usage: string;
+  
+  constructor() {
+    this.data = new SlashCommandBuilder()
+      .setName('reset')
+      .setDescription('Reset your conversation context');
 
-  usage = '/reset - Clears your current conversation context so you can start fresh.';
+    this.usage = '/reset - Clears your current conversation context so you can start fresh.';
+  }
 
-  async execute(interaction: CommandInteraction, conversationHistories: Map<string, any>, openai: any, logger: Logger): Promise<void> {
+  async execute(
+    interaction: CommandInteraction, 
+    conversationHistories: Map<string, any>, 
+    openai: OpenAI, 
+    logger: Logger): Promise<void> {
     const confirmRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
         .setCustomId('confirmReset')

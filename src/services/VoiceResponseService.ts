@@ -15,12 +15,15 @@ export interface VoiceResponse {
 export class VoiceResponseService {
 	private static instance: VoiceResponseService;
 	private conversationHistories: Map<string, any[]> = new Map();
+	private openaiVoiceModel: string;
 
-	private constructor(private logger: Logger) {}
+	private constructor(private logger: Logger, openaiVoiceModel: string) {
+		this.openaiVoiceModel = openaiVoiceModel;
+	}
 
-	public static getInstance(logger: Logger): VoiceResponseService {
+	public static getInstance(logger: Logger, openaiVoiceModel: string): VoiceResponseService {
 		if (!VoiceResponseService.instance) {
-			VoiceResponseService.instance = new VoiceResponseService(logger);
+			VoiceResponseService.instance = new VoiceResponseService(logger, openaiVoiceModel);
 		}
 		return VoiceResponseService.instance;
 	}
@@ -83,7 +86,7 @@ export class VoiceResponseService {
 		const OpenAI = (await import('openai')).default;
 		const openai = new OpenAI();
 		const aiResponse = await openai.chat.completions.create({
-			model: 'gpt-3.5-turbo',
+			model: this.openaiVoiceModel,
 			messages: history,
 		});
 		const rawReply = aiResponse.choices[0].message.content ?? '{"response": "Sorry, I could not generate a response.", "speak": true}';

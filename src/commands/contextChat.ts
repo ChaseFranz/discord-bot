@@ -1,17 +1,22 @@
 import { ContextMenuCommandBuilder, ApplicationCommandType, EmbedBuilder, CommandInteraction, Message, MessageContextMenuCommandInteraction, TextChannel, ChannelType } from 'discord.js';
 import { Logger } from 'winston';
+import { IBotCommand } from './types/DiscordModels';
 
-interface IConextChatCommand {
+interface IConextChatCommand extends IBotCommand {
   data: ContextMenuCommandBuilder;
-  execute(interaction: CommandInteraction, conversationHistories: Map<string, any>, openai: any, logger: Logger, userSettings: any): Promise<void>;
+  execute(interaction: CommandInteraction, conversationHistories: Map<string, any>, openai: any, logger: Logger, userSettings: any, openaiChatModel: string): Promise<void>;
 }
 
 class ContextChatCommand implements IConextChatCommand {
-  data = new ContextMenuCommandBuilder()
+  data: ContextMenuCommandBuilder;
+
+  constructor() {
+    this.data = new ContextMenuCommandBuilder()
     .setName('ChatGPT This Message')
     .setType(ApplicationCommandType.Message);
+  }
 
-  async execute(interaction: CommandInteraction, conversationHistories: Map<string, any>, openai: any, logger: Logger, userSettings: any): Promise<void> {
+  async execute(interaction: CommandInteraction, conversationHistories: Map<string, any>, openai: any, logger: Logger, userSettings: any, openaiChatModel: string): Promise<void> {
     const messageInteraction = interaction as MessageContextMenuCommandInteraction;
     const targetMessage = messageInteraction.targetMessage as Message;
     if (!targetMessage) {
@@ -54,7 +59,7 @@ class ContextChatCommand implements IConextChatCommand {
 
     try {
       const response = await openai.chat.completions.create({
-        model: 'gpt-3.5-turbo',
+        model: openaiChatModel,
         messages: history,
         temperature: settings.temperature,
       });
@@ -63,10 +68,10 @@ class ContextChatCommand implements IConextChatCommand {
       conversationHistories.set(conversationKey, history);
 
       const replyEmbed = new EmbedBuilder()
-        .setTitle('ChatGPT Response')
+        .setTitle('Jarvis Response')
         .setDescription(reply)
         .setColor(0x00AE86)
-        .setFooter({ text: 'Powered by ChatGPT' });
+        .setFooter({ text: `Powered by ${openaiChatModel}` });
 
       await interaction.editReply({ embeds: [replyEmbed] });
       logger.info(`Context menu command processed for ${interaction.user.tag}`);

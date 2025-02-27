@@ -1,6 +1,30 @@
-import { ContextMenuCommandBuilder, ApplicationCommandType, EmbedBuilder } from 'discord.js';
+import { 
+  ContextMenuCommandBuilder, 
+  ApplicationCommandType, 
+  EmbedBuilder, 
+  UserContextMenuCommandInteraction
+} from 'discord.js';
+import OpenAI from 'openai';
+import { Logger } from 'winston';
+import { IBotCommand } from './types/DiscordModels';
 
-class DescribeUserCommand {
+interface IDescribeUserCommand extends IBotCommand {
+  data: ContextMenuCommandBuilder;
+  usage: string;
+  execute(
+    interaction: UserContextMenuCommandInteraction, 
+    conversationHistories: Map<string, any>, 
+    openai: OpenAI, 
+    logger: Logger, 
+    client: any, 
+    userSettings: any
+  ): Promise<void>;
+}
+
+class DescribeUserCommand implements IDescribeUserCommand {
+  data: ContextMenuCommandBuilder;
+  usage: string;
+  
   constructor() {
     this.data = new ContextMenuCommandBuilder()
       .setName('Describe This User')
@@ -8,10 +32,18 @@ class DescribeUserCommand {
     this.usage = 'Right-click a user and select "Describe This User" to get a creative description of that user.';
   }
 
-  async execute(interaction, conversationHistories, openai, logger, client, userSettings) {
+  async execute(
+    interaction: UserContextMenuCommandInteraction , 
+    conversationHistories: Map<string, any>, 
+    openai: any, 
+    logger: Logger, 
+    client: any, 
+    userSettings: any
+  ): Promise<void> {
+
     const targetUser = interaction.targetUser;
     if (!targetUser) {
-      return interaction.reply({ content: "Couldn't retrieve the selected user.", ephemeral: true });
+      await interaction.reply({ content: "Couldn't retrieve the selected user.", ephemeral: true });
     }
 
     const prompt = `Describe the user with the following details: Username: ${targetUser.username}, Discriminator: ${targetUser.discriminator}. Provide a creative, friendly description that infers personality traits from these details.`;

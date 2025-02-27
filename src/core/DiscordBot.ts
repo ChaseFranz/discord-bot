@@ -7,7 +7,7 @@ import {
   ClientOptions 
 } from 'discord.js';
 import OpenAI from 'openai';
-import winston, { Logger } from 'winston';
+import { Logger } from 'winston';
 import ResetCommand from '../commands/reset.js';
 import SummarizeMessageCommand from '../commands/summarizeMessage.js';
 import SetLanguageCommand from '../commands/setLanguage.js';
@@ -23,6 +23,7 @@ import LeaveVoiceChannelCommand from '../commands/leaveVoiceChannel.js';
 import play from '../commands/music/play.js';
 import skip from '../commands/music/skip.js';
 import stop from '../commands/music/stop.js';
+import LoggerService from '../services/Logger.js';
 
 export interface HistoryEntry {
   role: string;
@@ -53,6 +54,8 @@ export class DiscordBot {
    * @param {string} clientId - The client ID of the Discord bot.
    * @param {string} guildId - The guild ID where the bot operates.
    * @param {string} openaiApiKey - The API key for OpenAI.
+   * @param {string} openaiChatModel - The OpenAI model to use for chat interactions.
+   * @param {string} openaiVoiceModel - The OpenAI model to use for voice interactions.
    * @param {ClientOptions} [clientOptions] - Optional client options for the Discord client.
    */
   constructor(
@@ -60,18 +63,12 @@ export class DiscordBot {
     private clientId: string,
     private guildId: string,
     private openaiApiKey: string,
-    clientOptions?: ClientOptions
+    private openaiChatModel: string,
+    private openaiVoiceModel: string,
+    clientOptions?: ClientOptions,
   ) {
-    // Create a Winston logger.
-    this.logger = winston.createLogger({
-      level: 'info',
-      format: winston.format.combine(
-        winston.format.colorize(),
-        winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
-        winston.format.printf(({ timestamp, level, message }) => `${timestamp} ${level}: ${message}`)
-      ),
-      transports: [new winston.transports.Console()],
-    });
+
+    this.logger = LoggerService.getInstance();
 
     // Initialize Discord client.
     this.client = new Client(
@@ -100,6 +97,8 @@ export class DiscordBot {
     this.client.openai = this.openai;
     (this.client as any).logger = this.logger;
     (this.client as any).commands = new Collection();
+    (this.client as any).openaiChatModel = this.openaiChatModel;
+    (this.client as any).openaiVoiceModel = this.openaiVoiceModel;
   }
 
   /**
@@ -107,6 +106,7 @@ export class DiscordBot {
    */
   public loadCommands(): void {
     const commandsArray: any[] = [];
+    
     const commands = [
       ResetCommand,
       SummarizeMessageCommand,
@@ -116,7 +116,8 @@ export class DiscordBot {
       CustomizeCommand,
       ContextChatCommand,
       ChatCommand,
-      JoinVoiceChannelCommand(this.logger),
+      JoinVoiceChannelCommand,
+      LeaveVoiceChannelCommand,
       play,
       skip,
       stop,

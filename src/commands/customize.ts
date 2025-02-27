@@ -1,8 +1,9 @@
 import { SlashCommandBuilder, SlashCommandOptionsOnlyBuilder } from '@discordjs/builders';
 import { CommandInteraction } from 'discord.js';
+import { IBotCommand } from './types/DiscordModels';
 
 // Define the interface
-interface ICustomizeCommand {
+interface ICustomizeCommand extends IBotCommand {
   data: SlashCommandOptionsOnlyBuilder;
   usage: string;
   execute(interaction: CommandInteraction, conversationHistories: Map<string, any>, openai: any, logger: any, client: any, userSettings: Map<string, any>): Promise<void>;
