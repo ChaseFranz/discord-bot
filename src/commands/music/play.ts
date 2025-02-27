@@ -2,16 +2,25 @@ import { SlashCommandBuilder, CommandInteraction, CommandInteractionOptionResolv
 import { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus } from '@discordjs/voice';
 import { queues, Song, MusicQueue } from '../../music/musicQueue.js';
 import ytdl from 'ytdl-core';
+import ytSearch from 'yt-search';
 
 export class PlayCommand {
   public data = new SlashCommandBuilder()
     .setName('play')
-    .setDescription('Plays a song from YouTube')
+    .setDescription('Plays a song from YouTube using a URL or search query')
     .addStringOption(option =>
-      option.setName('url')
-        .setDescription('The YouTube URL')
+      option.setName('query')
+        .setDescription('The YouTube URL or search query')
         .setRequired(true)
     );
+
+  private async searchYouTube(query: string): Promise<string | null> { 
+    const result = await ytSearch(query); 
+    if (result.videos.length > 0) { 
+      return result.videos[0].url; // Return the URL of the first result.
+    } 
+    return null; 
+  }
 
   public async execute(interaction: CommandInteraction): Promise<void> {
     if (!interaction.guildId) return;
@@ -27,16 +36,20 @@ export class PlayCommand {
     }
 
     const voiceChannel = (interaction.member as any).voice.channel;
-    const url = (interaction.options as CommandInteractionOptionResolver).getString('url', true);
+    const inputQuery = (interaction.options as CommandInteractionOptionResolver).getString('query', true);
 
-    // Validate the URL.
-    if (!ytdl.validateURL(url)) {
-      await interaction.editReply("Invalid YouTube URL.");
-      return;
+    // If the input is not a valid YouTube URL, treat it as a search query.
+    let videoUrl: string | null = inputQuery;
+    if (!ytdl.validateURL(inputQuery)) {
+      videoUrl = await this.searchYouTube(inputQuery);
+      if (!videoUrl) {
+        await interaction.editReply("No results found for your search query.");
+        return;
+      }
     }
 
     // Retrieve song information.
-    const songInfo = await ytdl.getInfo(url);
+    const songInfo = await ytdl.getInfo(videoUrl);
     const song: Song = {
       title: songInfo.videoDetails.title,
       url: songInfo.videoDetails.video_url,
