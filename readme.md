@@ -58,7 +58,8 @@ A feature-rich Discord bot that integrates ChatGPT for both conversational and c
     DISCORD_BOT_TOKEN=YOUR_DISCORD_BOT_TOKEN_HERE
     CLIENT_ID=YOUR_DISCORD_APPLICATION_ID_HERE
     GUILD_ID=YOUR_TEST_GUILD_ID_HERE
-    OPENAI_MODEL=gpt-3.5-turbo
+    OPENAI_CHAT_MODEL=gpt-3.5-turbo
+    OPENAI_VOICE_MODEL=gpt-4o-mini
 
     # AWS configuration (if using AWS services)
     AWS_ACCESS_KEY_ID=YOUR_ACCESS_KEY
