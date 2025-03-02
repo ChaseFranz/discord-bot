@@ -1,4 +1,4 @@
-import { KeywordDetector } from '../src/utils/keywordDetection';
+import { KeywordDetector } from "../../src/utils/keywordDetection";
 
 describe("KeywordDetector", () => {
   let detector: KeywordDetector;

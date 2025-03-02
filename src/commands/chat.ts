@@ -1,7 +1,6 @@
 import { CommandInteraction, EmbedBuilder, SlashCommandBuilder, CommandInteractionOptionResolver, ChannelType, TextChannel, SlashCommandOptionsOnlyBuilder } from 'discord.js';
 import { Logger } from 'winston';
 import OpenAI from 'openai';
-import { OpenAIModel } from './types/openAIModel.js';
 import { IBotCommand } from './types/DiscordModels.js';
 
 interface IChatCommand extends IBotCommand{

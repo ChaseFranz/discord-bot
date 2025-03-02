@@ -9,12 +9,8 @@ import {
 import OpenAI from 'openai';
 import { Logger } from 'winston';
 import ResetCommand from '../commands/reset.js';
-import SummarizeMessageCommand from '../commands/summarizeMessage.js';
-import SetLanguageCommand from '../commands/setLanguage.js';
 import HelpCommand from '../commands/help.js';
-import DescribeUserCommand from '../commands/describeUser.js';
 import CustomizeCommand from '../commands/customize.js';
-import ContextChatCommand from '../commands/contextChat.js';
 import ChatCommand from '../commands/chat.js';
 import ReadyEvent from '../events/ready.js';
 import InteractionCreateEvent from '../events/interactionCreate.js';
@@ -109,12 +105,8 @@ export class DiscordBot {
     
     const commands = [
       ResetCommand,
-      SummarizeMessageCommand,
-      SetLanguageCommand,
       HelpCommand,
-      DescribeUserCommand,
       CustomizeCommand,
-      ContextChatCommand,
       ChatCommand,
       JoinVoiceChannelCommand,
       LeaveVoiceChannelCommand,
