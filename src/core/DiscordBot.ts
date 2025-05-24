@@ -20,6 +20,8 @@ import play from '../commands/music/play.js';
 import skip from '../commands/music/skip.js';
 import stop from '../commands/music/stop.js';
 import queue from '../commands/music/queue.js';
+import pause from '../commands/music/pause.js';
+import resume from '../commands/music/resume.js';
 import LoggerService from '../services/Logger.js';
 
 export interface HistoryEntry {
@@ -114,7 +116,9 @@ export class DiscordBot {
       play,
       skip,
       stop,
-      queue
+      queue,
+      pause,
+      resume,
     ];
 
     for (const command of commands) {
