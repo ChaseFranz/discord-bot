@@ -9,11 +9,11 @@ export default {
     if (!interaction.guildId) return;
     const queue = queues.get(interaction.guildId);
     if (!queue) {
-      await interaction.reply("There is no song playing.");
+      await interaction.editReply("There is no song playing.");
       return;
     }
     // Stop the current song (the idle event will trigger the next song).
     queue.player.stop();
-    await interaction.reply("Skipped the current song.");
+    await interaction.editReply("Skipped the current song.");
   },
 };
