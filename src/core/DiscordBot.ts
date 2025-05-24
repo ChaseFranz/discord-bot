@@ -19,6 +19,7 @@ import LeaveVoiceChannelCommand from '../commands/leaveVoiceChannel.js';
 import play from '../commands/music/play.js';
 import skip from '../commands/music/skip.js';
 import stop from '../commands/music/stop.js';
+import queue from '../commands/music/queue.js';
 import LoggerService from '../services/Logger.js';
 
 export interface HistoryEntry {
@@ -113,6 +114,7 @@ export class DiscordBot {
       play,
       skip,
       stop,
+      queue
     ];
 
     for (const command of commands) {
