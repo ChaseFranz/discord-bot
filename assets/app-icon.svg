@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <!-- Night-sky background, slightly brighter behind the bubble -->
+    <radialGradient id="bg" cx="512" cy="470" r="760" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2A1D5C"/>
+      <stop offset="0.55" stop-color="#16103A"/>
+      <stop offset="1" stop-color="#0A0822"/>
+    </radialGradient>
+    <!-- Bubble: violet to magenta to pink; user-space so the tail blends seamlessly -->
+    <linearGradient id="bubble" x1="300" y1="210" x2="760" y2="830" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8F6BFF"/>
+      <stop offset="0.52" stop-color="#C86BF5"/>
+      <stop offset="1" stop-color="#FF7BAE"/>
+    </linearGradient>
+    <!-- Soft gloss on the upper-left of the bubble -->
+    <radialGradient id="gloss" cx="420" cy="330" r="330" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.30"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="70"/>
+    </filter>
+    <filter id="barShadow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="10"/>
+      <feOffset dy="8" result="blur"/>
+      <feFlood flood-color="#3B1E7A" flood-opacity="0.35"/>
+      <feComposite in2="blur" operator="in"/>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- Full-bleed background (platforms apply their own rounding/circle crop) -->
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+
+  <!-- Glow behind the bubble -->
+  <circle cx="512" cy="500" r="320" fill="#9B5CFF" opacity="0.55" filter="url(#glow)"/>
+
+  <!-- Listening rings -->
+  <circle cx="512" cy="496" r="372" fill="none" stroke="#B7A6FF" stroke-opacity="0.22" stroke-width="7"/>
+  <circle cx="512" cy="496" r="438" fill="none" stroke="#B7A6FF" stroke-opacity="0.10" stroke-width="5"/>
+
+  <!-- Speech bubble: tail first, circle over it, same user-space gradient -->
+  <path d="M 336 704 Q 330 790 284 838 Q 380 822 444 772 Z" fill="url(#bubble)"/>
+  <circle cx="512" cy="496" r="290" fill="url(#bubble)"/>
+  <circle cx="512" cy="496" r="290" fill="url(#gloss)"/>
+
+  <!-- Voice waveform -->
+  <g stroke="#FFFFFF" stroke-width="48" stroke-linecap="round" filter="url(#barShadow)">
+    <line x1="356" y1="462" x2="356" y2="530"/>
+    <line x1="434" y1="412" x2="434" y2="580"/>
+    <line x1="512" y1="362" x2="512" y2="630"/>
+    <line x1="590" y1="412" x2="590" y2="580"/>
+    <line x1="668" y1="462" x2="668" y2="530"/>
+  </g>
+</svg>

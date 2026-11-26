@@ -1,7 +1,11 @@
-# Node modules and environment files
+# Dependencies and environment
 node_modules/
 .env
-config.js
+.env.*
+!.env.example
+
+# Local data (SQLite memory store, recordings)
+data/
 recordings/
 *.mp3
 *.pcm
@@ -12,3 +16,6 @@ recordings/
 
 # Build artifacts
 /dist
+
+# AWS CDK synth output
+cdk.out/

@@ -1,0 +1,181 @@
+/**
+ * Live smoke test against the real APIs, without Discord. Uses a throwaway in-memory database.
+ * Claude is reached through the configured CLAUDE_PROVIDER (Claude Platform on AWS by default).
+ *
+ *   npm run build && npm run smoke            # Claude + AWS
+ *   npm run smoke -- --claude                 # Claude only (a few cents at most)
+ *   npm run smoke -- --aws                    # Polly + Transcribe only (fractions of a cent)
+ *
+ * Claude: seeds a fake voice transcript, then asks questions that need the memory tools, checks a
+ * second request reads the prompt cache, and runs a spoken-style turn on the voice model.
+ * AWS: synthesises a sentence with Polly and transcribes it back with Transcribe streaming.
+ */
+import dotenv from 'dotenv';
+import { PollyClient, SynthesizeSpeechCommand } from '@aws-sdk/client-polly';
+import { Assistant } from '../assistant/Assistant.js';
+import { ToolRegistry } from '../assistant/tools/ToolRegistry.js';
+import { createMusicToolProvider } from '../assistant/tools/musicTools.js';
+import { createVoiceToolProvider } from '../assistant/tools/voiceTools.js';
+import type { ToolContext } from '../assistant/tools/types.js';
+import { buildRoutes } from '../app.js';
+import { createClaudeClient, describeClaudeAccess, verifyClaudeAccess } from '../claude/client.js';
+import { connectMemoryTools } from '../memory/inProcess.js';
+import { loadConfig } from '../config/config.js';
+import { createLogger, describeError } from '../logging/logger.js';
+import { MusicService } from '../music/MusicService.js';
+import { MusicError, type MusicHost, type TrackSource } from '../music/types.js';
+import { PollyTextToSpeech } from '../speech/aws/PollyTextToSpeech.js';
+import { TranscribeSpeechToText } from '../speech/aws/TranscribeSpeechToText.js';
+import { openDatabase, openMemoryDatabase } from '../storage/sqlite/database.js';
+import { SqliteConversationRepository } from '../storage/sqlite/SqliteConversationRepository.js';
+import { SqliteMemoryRepository } from '../storage/sqlite/SqliteMemoryRepository.js';
+import { SqliteSettingsRepository } from '../storage/sqlite/SqliteSettingsRepository.js';
+import { SqliteTranscriptRepository } from '../storage/sqlite/SqliteTranscriptRepository.js';
+
+dotenv.config({ quiet: true });
+
+const GUILD = 'smoke-guild';
+const USER = 'smoke-user';
+
+/**
+ * The process environment for loadConfig, with placeholders for settings this test doesn't use.
+ * A placeholder only fills a setting that is unset or blank in .env; `overrides` always win.
+ */
+function smokeEnv(placeholders: Record<string, string>, overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const [key, value] of Object.entries(placeholders)) {
+    if (!env[key]?.trim()) env[key] = value;
+  }
+  return { ...env, ...overrides };
+}
+
+async function smokeClaude(): Promise<void> {
+  const config = loadConfig(smokeEnv({ DISCORD_BOT_TOKEN: 'unused', CLIENT_ID: 'unused', GUILD_ID: GUILD, AWS_REGION: 'us-east-1' }));
+  const logger = createLogger('debug');
+  logger.info(`Using ${describeClaudeAccess(config.claude.access)}`);
+  const claude = await createClaudeClient(config.claude.access);
+  await verifyClaudeAccess(claude, config.claude.access, [config.claude.chat.model, config.claude.voice.model], logger);
+
+  const db = openDatabase(':memory:');
+  const conversations = new SqliteConversationRepository(db);
+  const transcripts = new SqliteTranscriptRepository(db);
+  const settings = new SqliteSettingsRepository(db);
+
+  // Seed two days ago: a call where Sam suggested a trip.
+  const t0 = Date.now() - 2 * 24 * 60 * 60 * 1000;
+  const session = await transcripts.startSession({ guildId: GUILD, channelId: 'vc1', channelName: 'General', startedAt: t0 });
+  const lines: Array<[string, string]> = [
+    ['Alex', 'did anyone watch the game last night'],
+    ['Sam', 'honestly we should plan a trip, I vote Japan next spring for the cherry blossoms'],
+    ['Smoke', 'Japan sounds amazing, but flights are expensive'],
+    ['Sam', 'if we book by January it is way cheaper, like eight hundred bucks'],
+  ];
+  for (const [index, [speaker, text]] of lines.entries()) {
+    await transcripts.appendSegment({
+      sessionId: session.id, guildId: GUILD, channelId: 'vc1', speakerId: speaker === 'Smoke' ? USER : `id-${speaker}`,
+      speakerName: speaker, isAssistant: false, text, startedAt: t0 + index * 15_000, endedAt: t0 + index * 15_000 + 5_000,
+    });
+  }
+  await transcripts.endSession(session.id, t0 + 120_000);
+
+  const memoryDb = openMemoryDatabase(':memory:');
+  const memories = new SqliteMemoryRepository(memoryDb);
+  const memory = await connectMemoryTools({ transcripts, conversations, memories });
+  const noMusicHost: MusicHost = {
+    ensureOutput: async () => { throw new MusicError('Music is not available in the smoke test.'); },
+    queueFinished: () => undefined,
+  };
+  const noTracks: TrackSource = { resolve: async () => null, open: async () => { throw new Error('unused'); } };
+  const registry = new ToolRegistry([
+    memory.provider,
+    createMusicToolProvider(new MusicService(noMusicHost, noTracks, logger)),
+    createVoiceToolProvider({ get: () => undefined }),
+  ]);
+  // Log each tool call so you can see the memory MCP tools being used.
+  const loggingRegistry = Object.assign(Object.create(registry) as ToolRegistry, {
+    call: async (name: string, input: unknown, context: ToolContext) => {
+      const result = await registry.call(name, input, context);
+      logger.info(`tool ${name}(${JSON.stringify(input)}) -> ${result.isError ? 'ERROR ' : ''}${result.content.slice(0, 300)}`);
+      return result;
+    },
+  });
+
+  const assistant = new Assistant({
+    messages: claude.beta.messages,
+    conversations, settings, tools: loggingRegistry, logger, clock: Date.now,
+    assistantName: config.assistant.name, timeZone: config.assistant.timeZone, routes: buildRoutes(config), memories,
+  });
+  const scope = { guildId: GUILD, userId: USER };
+
+  const ask = async (label: string, modality: 'text' | 'voice', text: string) => {
+    logger.info(`--- ${label}: ${text}`);
+    const reply = await assistant.respond({
+      scope, modality, userDisplayName: 'Smoke', text, channelName: modality === 'voice' ? 'General' : 'bot-chat',
+      userVoiceChannelId: modality === 'voice' ? 'vc1' : undefined, userVoiceChannelName: modality === 'voice' ? 'General' : undefined,
+    });
+    logger.info(`=== ${reply.model} [${reply.outcome}${reply.silent ? ', silent' : ''}]: ${reply.text}`);
+    if (reply.sources.length > 0) logger.info(`sources: ${reply.sources.map((s) => s.url).join(', ')}`);
+  };
+
+  await ask('text 1 (needs memory search)', 'text', 'What trip did Sam suggest when we were in voice chat the other day, and what did they say about price?');
+  await ask('text 2 (should read the prompt cache)', 'text', 'Thanks. Remind me what we just talked about, in one sentence.');
+  await ask(`voice (${config.claude.voice.model})`, 'voice', `${config.assistant.name}, when did Sam say we need to book by?`);
+
+  // Long-term notes: Claude should decide to save these, and they should reach another person's turn.
+  await ask('text 3 (should save notes)', 'text', "Please remember that I'm vegetarian and my favourite game is Hades.");
+  const saved = await memories.listAbout(GUILD, [USER], 10);
+  logger.info(`Notes saved about Smoke: ${saved.map((m) => `#${m.id} ${m.text}`).join(' | ') || 'none'}`);
+  const samAsks = `${config.assistant.name}, what should we cook for Smoke tonight?`;
+  logger.info(`--- voice from Sam, with Smoke in the call: ${samAsks}`);
+  const forSam = await assistant.respond({
+    scope: { guildId: GUILD, userId: 'id-Sam' }, modality: 'voice', userDisplayName: 'Sam', text: samAsks,
+    channelName: 'General', userVoiceChannelId: 'vc1', userVoiceChannelName: 'General',
+    peoplePresent: [{ id: USER, name: 'Smoke' }, { id: 'id-Sam', name: 'Sam' }],
+  });
+  logger.info(`=== ${forSam.model} [${forSam.outcome}]: ${forSam.text}`);
+
+  const stored = await conversations.loadActive(scope);
+  logger.info(`Thread now holds ${stored.length} stored messages; thinking blocks stored: ${stored.some((m) => m.content.some((b) => b.type === 'thinking'))}`);
+  await memory.close();
+  db.close();
+  memoryDb.close();
+}
+
+async function smokeAws(): Promise<void> {
+  // Claude isn't used here, so don't require its settings (e.g. the workspace ID).
+  const config = loadConfig(smokeEnv({ DISCORD_BOT_TOKEN: 'unused', CLIENT_ID: 'unused', GUILD_ID: GUILD }, { CLAUDE_PROVIDER: 'anthropic' }));
+  const logger = createLogger('info');
+  const sentence = `Hey ${config.assistant.name}, play some jazz in the living room.`;
+
+  const tts = new PollyTextToSpeech({ region: config.aws.region, voiceId: config.aws.pollyVoiceId, engine: config.aws.pollyEngine });
+  const mp3 = await tts.synthesize(sentence);
+  let mp3Bytes = 0;
+  for await (const chunk of mp3.audio) mp3Bytes += (chunk as Buffer).length;
+  logger.info(`Polly (${config.aws.pollyEngine}/${config.aws.pollyVoiceId}) synthesised ${mp3Bytes} bytes of MP3.`);
+
+  // Round trip: Polly PCM (16 kHz mono) -> Transcribe streaming.
+  const polly = new PollyClient({ region: config.aws.region });
+  const pcm = await polly.send(new SynthesizeSpeechCommand({
+    Text: sentence, OutputFormat: 'pcm', SampleRate: '16000', VoiceId: config.aws.pollyVoiceId as never, Engine: config.aws.pollyEngine as never,
+  }));
+  const audio = Buffer.from(await pcm.AudioStream!.transformToByteArray());
+  async function* chunks() {
+    for (let offset = 0; offset < audio.length; offset += 3_200) yield audio.subarray(offset, offset + 3_200);
+  }
+  const stt = new TranscribeSpeechToText({ region: config.aws.region, languageCode: config.aws.transcribeLanguageCode });
+  const transcript = await stt.transcribe(chunks(), { encoding: 'pcm_s16le', sampleRate: 16_000, channels: 1 });
+  logger.info(`Transcribe heard: "${transcript}"`);
+}
+
+async function main(): Promise<void> {
+  const args = new Set(process.argv.slice(2));
+  const runClaude = args.has('--claude') || !args.has('--aws');
+  const runAws = args.has('--aws') || !args.has('--claude');
+  if (runClaude) await smokeClaude();
+  if (runAws) await smokeAws();
+}
+
+main().catch((error: unknown) => {
+  process.stderr.write(`Smoke test failed: ${describeError(error)}\n`);
+  process.exit(1);
+});

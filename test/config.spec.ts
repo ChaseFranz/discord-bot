@@ -1,0 +1,78 @@
+import { ConfigError, loadConfig } from '../src/config/config.js';
+
+const required = {
+  DISCORD_BOT_TOKEN: 'token',
+  CLIENT_ID: 'client',
+  GUILD_ID: 'guild',
+  AWS_REGION: 'us-east-1',
+  ANTHROPIC_AWS_WORKSPACE_ID: 'wrkspc_01Test',
+};
+
+describe('loadConfig', () => {
+  it('reaches Claude through Claude Platform on AWS by default, in the AWS region', () => {
+    expect(loadConfig({ ...required }).claude.access).toEqual({ provider: 'aws', region: 'us-east-1', workspaceId: 'wrkspc_01Test' });
+    expect(loadConfig({ ...required, CLAUDE_AWS_REGION: 'us-west-2' }).claude.access).toMatchObject({ region: 'us-west-2' });
+  });
+
+  it('requires a workspace ID for Claude Platform on AWS, and only then', () => {
+    const { ANTHROPIC_AWS_WORKSPACE_ID: _omit, ...withoutWorkspace } = required;
+    expect(() => loadConfig(withoutWorkspace)).toThrow(/ANTHROPIC_AWS_WORKSPACE_ID: required for Claude Platform on AWS/);
+    expect(() => loadConfig({ ...required, ANTHROPIC_AWS_WORKSPACE_ID: 'my-workspace' })).toThrow(/starts with "wrkspc_"/);
+    expect(loadConfig({ ...withoutWorkspace, CLAUDE_PROVIDER: 'anthropic' }).claude.access).toEqual({ provider: 'anthropic' });
+    expect(() => loadConfig({ ...required, CLAUDE_PROVIDER: 'bedrock' })).toThrow(/CLAUDE_PROVIDER/);
+  });
+
+  it('applies defaults: Opus for text, Haiku for voice, explicit effort levels', () => {
+    const config = loadConfig({ ...required });
+    expect(config.claude.chat).toEqual({ model: 'claude-opus-5-5', effort: 'medium' });
+    expect(config.claude.voice).toEqual({ model: 'claude-haiku-5-5', effort: 'low' });
+    expect(config.claude.webSearchEnabled).toBe(true);
+    expect(config.assistant.name).toBe('Nimbus');
+    expect(config.assistant.wakeWord).toBe('nimbus');
+    expect(config.assistant.wakeSound).toBe(true);
+    expect(config.storage).toEqual({ databasePath: './data/bot.db', memoryDatabasePath: './data/memories.db', retentionDays: 30 });
+    expect(config.aws).toEqual({
+      region: 'us-east-1',
+      transcribeLanguageCode: 'en-US',
+      pollyVoiceId: 'Joanna',
+      pollyEngine: 'generative',
+    });
+  });
+
+  it('treats blank values as unset', () => {
+    const config = loadConfig({ ...required, CLAUDE_CHAT_MODEL: '   ', MEMORY_RETENTION_DAYS: '' });
+    expect(config.claude.chat.model).toBe('claude-opus-5-5');
+    expect(config.storage.retentionDays).toBe(30);
+  });
+
+  it('derives the wake word from the assistant name unless set', () => {
+    expect(loadConfig({ ...required, ASSISTANT_NAME: 'Friday' }).assistant.wakeWord).toBe('friday');
+    expect(loadConfig({ ...required, ASSISTANT_NAME: 'Friday', WAKE_WORD: 'Computer' }).assistant.wakeWord).toBe('computer');
+  });
+
+  it('parses booleans and numbers', () => {
+    const config = loadConfig({ ...required, WEB_SEARCH_ENABLED: 'false', WAKE_SOUND_ENABLED: 'false', AMBIENT_CONTEXT_MINUTES: '5', MEMORY_RETENTION_DAYS: '0' });
+    expect(config.claude.webSearchEnabled).toBe(false);
+    expect(config.assistant.wakeSound).toBe(false);
+    expect(config.assistant.ambientContextMinutes).toBe(5);
+    expect(config.storage.retentionDays).toBe(0);
+  });
+
+  it('lists every missing or invalid setting at once', () => {
+    expect.assertions(5);
+    try {
+      loadConfig({ CLAUDE_VOICE_EFFORT: 'turbo' });
+    } catch (error) {
+      expect(error).toBeInstanceOf(ConfigError);
+      const message = (error as Error).message;
+      expect(message).toContain('DISCORD_BOT_TOKEN');
+      expect(message).toContain('AWS_REGION');
+      expect(message).toContain('CLAUDE_VOICE_EFFORT');
+      expect(message).toContain('ANTHROPIC_AWS_WORKSPACE_ID');
+    }
+  });
+
+  it('rejects an unknown time zone', () => {
+    expect(() => loadConfig({ ...required, TIMEZONE: 'Mars/Olympus' })).toThrow(ConfigError);
+  });
+});
