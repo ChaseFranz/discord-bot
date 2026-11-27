@@ -46,6 +46,12 @@ export class InteractionWorker {
       await context.editReply('This bot only works in its own server.');
       return;
     }
+    // Before anything else, so /play with music turned off doesn't start the voice task just to say so.
+    const reason = deps.dispatcher.unavailable(command);
+    if (reason) {
+      await context.editReply(reason);
+      return;
+    }
     // Another process (the voice task, another Lambda) may have spent since this one last looked.
     await deps.usage.refresh(interaction.guild_id);
     const waitSeconds = deps.dispatcher.checkCooldown(command, context.userId);

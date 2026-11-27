@@ -213,6 +213,7 @@ Compared with running on your PC:
 
 - **`/join` and `/play`** take about 30–60 seconds the first time, while the voice task starts. Nimbus replies "On my way…" right away.
 - **@mention chat** is off: it needs a connection that's always open. `/chat` works as usual.
+- **Music** is off: YouTube won't hand audio to AWS addresses ("Sign in to confirm you're not a bot"). The music commands, and Nimbus when asked, say music is turned off. Setting the `MUSIC_ENABLED` variable to `true` turns it back on at the next deploy.
 - **Data** is kept in two on-demand DynamoDB tables. Old transcripts and conversation turns expire by themselves (DynamoDB's TTL). Nothing is copied from your PC's SQLite files.
 - **Reminders** arrive on time even when nobody is in a call.
 
@@ -240,7 +241,8 @@ It costs roughly **$5 a month** at about 3 hours of calls a day, on top of Claud
    | `TIMEZONE` | Your time zone, e.g. `America/Chicago`. AWS runs in UTC otherwise, and reminders would be off. |
    | `CLAUDE_PROVIDER` | `anthropic` for now (uses the API key from step 1). Change it to `aws` and add `ANTHROPIC_AWS_WORKSPACE_ID` once Claude Platform on AWS is set up. |
    | `ALERT_EMAIL` | Optional: gets Lambda error alerts and the spending alert |
-   | `DAILY_BUDGET_USD`, `MONTHLY_BUDGET_USD` | Optional: the bot's daily cap (default $5) and the AWS Budgets alert (default $25) |
+   | `MUSIC_ENABLED` | Optional: `true` turns music on. It's off on AWS by default, because YouTube blocks AWS addresses. |
+| `DAILY_BUDGET_USD`, `MONTHLY_BUDGET_USD` | Optional: the bot's daily cap (default $5) and the AWS Budgets alert (default $25) |
 
 3. Merge to `main` (or run the **Deploy** workflow by hand) and approve it. The first deploy takes about 10 minutes, mostly building the voice task image.
 4. Stop the bot on your PC, then send slash commands to AWS:

@@ -1,7 +1,7 @@
 import { describeError } from '../logging/logger.js';
 import { MusicError } from '../music/types.js';
 import type { CommandContext, ComponentContext } from './context.js';
-import type { AppServices, BotCommand, ComponentHandler } from './types.js';
+import { unavailableReason, type AppServices, type BotCommand, type ComponentHandler } from './types.js';
 
 const DEFAULT_COOLDOWN_SECONDS = 3;
 
@@ -40,8 +40,18 @@ export class CommandDispatcher {
     return undefined;
   }
 
+  /** Why `command` can't be used right now (its feature is turned off), or undefined if it can. */
+  unavailable(command: BotCommand): string | undefined {
+    return unavailableReason(command, this.services.config);
+  }
+
   /** Runs an already-deferred command, replying with an error message if it fails. */
   async runCommand(command: BotCommand, context: CommandContext): Promise<void> {
+    const reason = this.unavailable(command);
+    if (reason) {
+      await context.editReply(reason).catch((error: unknown) => this.services.logger.warn(`Could not send reply: ${describeError(error)}`));
+      return;
+    }
     try {
       await command.execute(context, this.services);
     } catch (error) {

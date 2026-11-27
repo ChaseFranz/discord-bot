@@ -43,6 +43,8 @@ if (clientId && guildId && publicKey && timeZone) {
     claude = { provider };
   }
   const dailyBudget = context('dailyBudgetUsd');
+  const music = context('musicEnabled');
+  if (music !== undefined && music !== 'true' && music !== 'false') throw new Error(`musicEnabled must be "true" or "false", not "${music}"`);
   const monthlyBudget = context('monthlyBudgetUsd');
   new NimbusCloudStack(app, 'NimbusCloud', {
     env,
@@ -52,6 +54,7 @@ if (clientId && guildId && publicKey && timeZone) {
     claude,
     alertEmail: context('alertEmail'),
     monthlyBudgetUsd: monthlyBudget ? Number(monthlyBudget) : undefined,
+    musicEnabled: music === 'true',
     botSettings: dailyBudget ? { DAILY_BUDGET_USD: dailyBudget } : {},
     projectRoot: join(__dirname, '..', '..'),
   });

@@ -41,6 +41,7 @@ const envSchema = z.object({
   POLLY_VOICE_ID: z.string().default('Joanna'),
   POLLY_ENGINE: z.enum(POLLY_ENGINES).default('generative'),
 
+  MUSIC_ENABLED: z.stringbool().default(true),
   YT_DLP_PATH: z.string().min(1).default('yt-dlp'),
 
   ASSISTANT_NAME: z.string().default('Nimbus'),
@@ -100,6 +101,8 @@ export interface AppConfig {
     pollyEngine: PollyEngine;
   };
   music: {
+    /** Off: the music commands and Nimbus say music is turned off, and nothing is fetched from YouTube. */
+    enabled: boolean;
     /** The yt-dlp executable that fetches YouTube audio: a path, or a name on PATH. */
     ytDlpPath: string;
   };
@@ -183,7 +186,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       pollyVoiceId: e.POLLY_VOICE_ID,
       pollyEngine: e.POLLY_ENGINE,
     },
-    music: { ytDlpPath: e.YT_DLP_PATH },
+    music: { enabled: e.MUSIC_ENABLED, ytDlpPath: e.YT_DLP_PATH },
     assistant: {
       name: e.ASSISTANT_NAME,
       wakeWord: (e.WAKE_WORD ?? e.ASSISTANT_NAME).toLowerCase(),

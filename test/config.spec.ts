@@ -40,7 +40,8 @@ describe('loadConfig', () => {
       pollyVoiceId: 'Joanna',
       pollyEngine: 'generative',
     });
-    expect(config.music).toEqual({ ytDlpPath: 'yt-dlp' });
+    expect(config.music).toEqual({ enabled: true, ytDlpPath: 'yt-dlp' });
+    expect(loadConfig({ ...required, MUSIC_ENABLED: 'false' }).music.enabled).toBe(false);
     expect(loadConfig({ ...required, YT_DLP_PATH: '/opt/bin/yt-dlp' }).music.ytDlpPath).toBe('/opt/bin/yt-dlp');
   });
 

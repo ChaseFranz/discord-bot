@@ -3,6 +3,7 @@ import type { Assistant } from '../assistant/Assistant.js';
 import type { AppConfig } from '../config/config.js';
 import type { Logger } from '../logging/logger.js';
 import type { MusicService } from '../music/MusicService.js';
+import { MUSIC_TURNED_OFF } from '../music/types.js';
 import type { PrivacyService } from '../privacy/PrivacyService.js';
 import type { ConversationRepository, MemoryRepository, SettingsRepository } from '../storage/ports.js';
 import type { UsageService } from '../usage/UsageService.js';
@@ -52,6 +53,8 @@ export interface BotCommand {
    * on AWS; 'in-call' ones only make sense while it's running.
    */
   readonly voice?: 'starts-call' | 'in-call';
+  /** A feature that can be turned off in the settings; the command then says so instead of running. */
+  readonly feature?: 'music';
   /** Runs after the interaction has been deferred; reply with editReply/followUp. */
   execute(context: CommandContext, services: AppServices): Promise<void>;
 }
@@ -60,6 +63,12 @@ export interface ComponentHandler {
   /** Handles buttons and select menus whose customId starts with `${prefix}:`. */
   readonly prefix: string;
   execute(context: ComponentContext, services: AppServices): Promise<void>;
+}
+
+/** Why a command can't be used right now (its feature is turned off), or undefined if it can. */
+export function unavailableReason(command: BotCommand, config: AppConfig): string | undefined {
+  if (command.feature === 'music' && !config.music.enabled) return MUSIC_TURNED_OFF;
+  return undefined;
 }
 
 /** The voice connection and music, for commands that only run where calls are handled. */
