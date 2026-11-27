@@ -20,7 +20,7 @@ function context(overrides: Partial<ToolContext> = {}): ToolContext {
     modality: 'voice',
     voiceChannelId: 'vc',
     textChannelId: 'vc',
-    signals: { silenceRequested: false, stopRequested: false },
+    signals: { silenceRequested: false, stopRequested: false, leaveRequested: false },
     ...overrides,
   };
 }

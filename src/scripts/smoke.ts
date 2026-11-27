@@ -117,7 +117,7 @@ async function smokeClaude(): Promise<void> {
   const registry = new ToolRegistry([
     memory.provider,
     createMusicToolProvider(new MusicService(noMusicHost, noTracks, logger)),
-    createVoiceToolProvider({ get: () => undefined }),
+    createVoiceToolProvider({ get: () => ({ stopSpeaking: () => false }), leave: async () => true }),
     createReminderToolProvider({ reminders, alarm: schedulerAlarm(undefined), clock: Date.now, timeZone: config.assistant.timeZone }),
   ]);
   // Log each tool call so you can see the memory MCP tools being used.
@@ -169,7 +169,7 @@ async function smokeClaude(): Promise<void> {
       onText: (delta) => chunker.push(delta),
     });
     chunker.flush();
-    const how = `${reply.outcome}${reply.silent ? ', said nothing' : ''}${reply.stopped ? ', told to stop' : ''}`;
+    const how = `${reply.outcome}${reply.silent ? ', said nothing' : ''}${reply.stopped ? ', told to stop' : ''}${reply.leave ? ', leaving the call' : ''}`;
     logger.info(`=== ${label}: ${reply.model} [${how}] after ${Date.now() - started} ms, ${pieces} spoken piece${pieces === 1 ? '' : 's'}: ${reply.text}`);
     return reply;
   };
@@ -211,6 +211,10 @@ async function smokeClaude(): Promise<void> {
   const second = await ask('another question it will be talked over on', alex, `${name}, give me three tips for packing light.`);
   call.note(`You were interrupted while speaking. Heard so far: "${second.text.split(/(?<=[.!?])\s+/)[0] ?? ''}" Not yet said: "the rest of your reply"`);
   await ask('someone agreeing out loud (should say nothing and carry on)', alex, 'mm-hm, yeah', 'interrupting');
+
+  // Leaving: someone saying they are off is not telling it to go; someone telling it to go is.
+  await ask('someone saying goodbye to the others (should not leave)', sam, "okay I'm heading out, bye everyone", 'maybe');
+  await ask('told it can go (should say goodbye and leave)', alex, `${name}, we're done for tonight, you can go now.`);
 
   // Reminders: Claude should call set_reminder for the person who asked, then list_reminders when they type.
   await ask('should set a reminder', smoke, `${name}, remind me in ten minutes to take the pizza out.`);

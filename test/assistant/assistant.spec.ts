@@ -132,6 +132,15 @@ describe('Assistant', () => {
         },
       }),
       defineTool({
+        name: 'leave_call',
+        description: 'Leave.',
+        input: z.object({}),
+        run: async (_input, context) => {
+          context.signals.leaveRequested = true;
+          return 'You will leave the call as soon as your reply has been said.';
+        },
+      }),
+      defineTool({
         name: 'stop_speaking',
         description: 'Stop.',
         input: z.object({}),
@@ -187,11 +196,12 @@ describe('Assistant', () => {
 
     // Tools: client tools sorted, eager streaming on, then direct-call web search.
     const tools = request.tools as unknown as Array<Record<string, unknown>>;
-    expect(tools.map((t) => t.name)).toEqual(['lookup', 'say_nothing', 'stop_speaking', 'web_search']);
-    expect(tools[0]!.eager_input_streaming).toBe(true);
+    expect(tools.map((t) => t.name)).toEqual(['leave_call', 'lookup', 'say_nothing', 'stop_speaking', 'web_search']);
+    const lookup = tools.find((tool) => tool.name === 'lookup')!;
+    expect(lookup.eager_input_streaming).toBe(true);
     // Typed turns are always for the person typing: no requester_id here.
-    expect(Object.keys((tools[0]!.input_schema as { properties: object }).properties)).toEqual(['query']);
-    expect(tools[3]).toEqual({ type: 'web_search_20260209', name: 'web_search', max_uses: 5, allowed_callers: ['direct'] });
+    expect(Object.keys((lookup.input_schema as { properties: object }).properties)).toEqual(['query']);
+    expect(tools.at(-1)).toEqual({ type: 'web_search_20260209', name: 'web_search', max_uses: 5, allowed_callers: ['direct'] });
 
     // The person's turn, then the per-request situation note as a system message.
     expect(request.messages).toHaveLength(2);
@@ -615,6 +625,19 @@ describe('Assistant', () => {
       expect(fake.requests).toHaveLength(1);
     });
 
+    it('reports being told to leave, with the goodbye it wrote', async () => {
+      call.hear(line('alice', 'Alice', 'Nimbus, you can go now'));
+      fake.enqueue(uses('leave_call'), says('Okay, see you later!'));
+      const heard: string[] = [];
+      const reply = await makeAssistant().respondInCall(callTurn(call, [ALICE], { onText: (delta) => heard.push(delta) }));
+      expect(reply).toMatchObject({ text: 'Okay, see you later!', silent: false, stopped: false, leave: true });
+      expect(heard.join('')).toBe('Okay, see you later!');
+      // An ordinary reply does not leave.
+      call.hear(line('alice', 'Alice', 'Nimbus, hi'));
+      fake.enqueue(says('Hello!'));
+      expect(await makeAssistant().respondInCall(callTurn(call, [ALICE]))).toMatchObject({ leave: false });
+    });
+
     it('passes the text on as it is written, and nothing once silence is asked for', async () => {
       call.hear(line('alice', 'Alice', 'Nimbus, never mind'));
       fake.enqueue(haiku([{ type: 'text', text: 'Let me check. ' }, { type: 'tool_use', id: 'tu_1', name: 'stop_speaking', input: {} }], 'tool_use'));
@@ -668,7 +691,9 @@ describe('Assistant', () => {
       });
 
       // In a call every tool takes requester_id on top of its own input.
-      const lookup = (fake.requests[0]!.tools as unknown as Array<{ input_schema: { properties: Record<string, unknown>; required?: string[] } }>)[0]!;
+      const lookup = (fake.requests[0]!.tools as unknown as Array<{ name: string; input_schema: { properties: Record<string, unknown>; required?: string[] } }>).find(
+        (tool) => tool.name === 'lookup',
+      )!;
       expect(Object.keys(lookup.input_schema.properties)).toEqual(['query', 'requester_id']);
       expect(lookup.input_schema.required).toEqual(['query']);
       const note = String(fake.requests[0]!.messages.at(-1)!.content);

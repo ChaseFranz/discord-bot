@@ -24,8 +24,8 @@ export interface VoiceConversationDeps {
     status(guildId: string): MusicStatus;
     pause(guildId: string): unknown;
   };
-  /** The guild's current voice session, if any (for announcements). */
-  sessions: { get(guildId: string): VoiceSession | undefined };
+  /** The guild's current voice session, if any (for announcements), and leaving the call when told to. */
+  sessions: { get(guildId: string): VoiceSession | undefined; leave(guildId: string): Promise<boolean> };
   privacy: { level(guildId: string, userId: string): Promise<PrivacyLevel> };
   budget: { isPaused(guildId: string): boolean };
   wakeWord: KeywordDetector;
@@ -105,6 +105,8 @@ interface Reply {
   heldForNothing: Set<string>;
   /** People told "one sec" while it was playing. */
   acknowledged: Set<string>;
+  /** Set when this reply is the goodbye to someone who told the assistant to leave: once it has been said, it goes. */
+  goodbyeTo: string | undefined;
   over: boolean;
 }
 
@@ -584,11 +586,30 @@ export class VoiceConversationService implements CallListener {
     const reply = turn.reply ?? this.carryOn(state, turn, onHold);
     // Said after anything that was already on its way out.
     if (failed) void session.speak('Sorry, something went wrong on my end.');
+    if (answer?.leave) {
+      // Told to go. With a goodbye, it leaves once that has been said (see finish): if someone
+      // talks over it, the next turn can still change its mind, and "stop" calls it off. With
+      // nothing to say, it leaves now.
+      if (turn.reply) {
+        turn.reply.goodbyeTo = latest.name;
+      } else {
+        this.leave(state, latest.name);
+        return;
+      }
+    }
     if (!reply) {
       if (answer && !onHold) deps.logger.info(`Stayed quiet: nothing in what ${latest.name} said needed a reply.`);
       return;
     }
     if ((await this.untilSpoken(reply)) === 'spoken') this.finish(state, reply, 'spoken');
+  }
+
+  /** Leaves the call because someone in it said to. */
+  private leave(state: CallState, askedBy: string): void {
+    const { deps } = this;
+    const { guildId } = state.session;
+    deps.logger.info(`Leaving the call: ${askedBy} said to.`);
+    void deps.sessions.leave(guildId).catch((error: unknown) => deps.logger.warn(`Could not leave the call: ${describeError(error)}`));
   }
 
   /**
@@ -621,6 +642,7 @@ export class VoiceConversationService implements CallListener {
       wake: undefined,
       heldForNothing: new Set(),
       acknowledged: new Set(),
+      goodbyeTo: undefined,
       over: false,
     };
     state.reply = reply;
@@ -669,6 +691,8 @@ export class VoiceConversationService implements CallListener {
       // Open from when the reply became audible: people often start answering just before it ends.
       state.window = { from: reply.audibleAt ?? now, until: now + this.deps.followUpMs, askers: new Set(reply.askers.keys()) };
     }
+    // That was its goodbye.
+    if (how === 'spoken' && reply.goodbyeTo !== undefined && state.live) this.leave(state, reply.goodbyeTo);
   }
 
   // ---------------------------------------------------------------------------
