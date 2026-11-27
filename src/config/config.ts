@@ -56,7 +56,7 @@ const envSchema = z.object({
 
   AWS_REGION: z.string({ error: 'AWS_REGION is required (used by Transcribe, Polly and Claude Platform on AWS)' }).min(1),
   TRANSCRIBE_LANGUAGE_CODE: z.string().default('en-US'),
-  POLLY_VOICE_ID: z.string().default('Joanna'),
+  POLLY_VOICE_ID: z.string().default('Kenneth'),
   POLLY_ENGINE: z.enum(POLLY_ENGINES).default('generative'),
 
   MUSIC_ENABLED: z.stringbool().default(true),

@@ -37,7 +37,7 @@ describe('loadConfig', () => {
     expect(config.aws).toEqual({
       region: 'us-east-1',
       transcribeLanguageCode: 'en-US',
-      pollyVoiceId: 'Joanna',
+      pollyVoiceId: 'Kenneth',
       pollyEngine: 'generative',
     });
     expect(config.music).toEqual({ enabled: true, source: 'direct', ytDlpPath: 'yt-dlp', helpers: undefined });

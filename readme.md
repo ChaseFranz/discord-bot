@@ -126,7 +126,7 @@ To rotate the key, increase `accessKeySerial` in [infra/bin/nimbus.ts](infra/bin
 
 To limit Claude access to one workspace, replace `workspace/*` in the policy with that workspace's ARN, `arn:aws:aws-external-anthropic:<region>:<account-id>:workspace/<workspace-id>`. With `CLAUDE_PROVIDER=anthropic`, only the first statement is needed.
 
-Pick a region where your Polly voice supports your engine. The default, `Joanna` with `generative`, works in `us-east-1`. The bot checks this at startup.
+Pick a region where your Polly voice supports your engine. The default, `Kenneth` with `generative`, works in `us-east-1`. The bot checks this at startup.
 
 ### 5. Configure, build, run
 
@@ -169,7 +169,7 @@ By voice: "Nimbus, play Bohemian Rhapsody", "Nimbus, skip this", "Nimbus, what d
 
 ### Talking to Nimbus
 
-- **The chime.** When Nimbus hears its name, it plays a short chime and pauses any music, so everyone knows it's thinking. The music comes back after the reply. Turn the chime off with `WAKE_SOUND_ENABLED=false`.
+- **The chime.** As soon as Nimbus hears its name, while you're still talking, it plays a short chime and pauses any music, so you know it's listening. The music comes back after the reply, or straight away if what you said wasn't for it after all. Turn the chime off with `WAKE_SOUND_ENABLED=false`.
 - **Fast replies.** Nimbus starts on a request the moment you stop talking, speaks its first sentence while Claude is still writing the rest, and prepares each next sentence while the current one plays. Each reply logs where the time went (`Timing for …`).
 - **Several people at once.** If two people ask at almost the same moment, they get one reply that answers both by name. Nobody has heard the first answer yet, so Nimbus starts over with both questions.
 - **Pausing mid-sentence.** "Nimbus, what's the weather… in Chicago tomorrow?" is one question. If you carry on before Nimbus has started answering, it waits for you and answers the whole thing.
