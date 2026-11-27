@@ -49,7 +49,7 @@ export async function buildCallStack(core: Core, bot: DiscordBot, alarm: Reminde
     stt,
     tts,
     clock,
-    capture: DEFAULT_CAPTURE_OPTIONS,
+    capture: { ...DEFAULT_CAPTURE_OPTIONS, silenceMs: config.call.silenceMs },
     // Nothing is captured from people who opted out, or from anyone once today's budget is spent.
     admitSpeaker: async (guild, userId) => !usage.isPaused(guild) && (await privacy.level(guild, userId)) !== 'off',
     meter: usage,
@@ -89,11 +89,16 @@ export async function buildCallStack(core: Core, bot: DiscordBot, alarm: Reminde
     clock,
     assistantName: config.assistant.name,
     botUserId: () => bot.userId,
-    ambientContextMinutes: config.assistant.ambientContextMinutes,
+    timeZone: config.assistant.timeZone,
+    followUps: config.call.followUps,
     followUpMs: config.assistant.followUpSeconds * 1000,
+    bargeIn: config.call.bargeIn,
+    bargeInMs: config.call.bargeInMs,
+    acknowledge: config.call.acknowledge,
+    silenceMs: config.call.silenceMs,
     wakeSound: config.assistant.wakeSound ? renderWakeChime() : undefined,
   });
-  voice.setUtteranceHandler(conversation.handleUtterance);
+  voice.setCallListener(conversation);
   voice.onSessionEnded((guild) => {
     music.detach(guild);
     conversation.sessionEnded(guild);

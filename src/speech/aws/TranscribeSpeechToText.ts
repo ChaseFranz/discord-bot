@@ -4,7 +4,7 @@ import {
   type AudioStream,
   type LanguageCode,
 } from '@aws-sdk/client-transcribe-streaming';
-import type { PcmFormat, SpeechToText } from '../ports.js';
+import type { PcmFormat, SpeechToText, TranscriptionHooks } from '../ports.js';
 
 export interface TranscribeOptions {
   region: string;
@@ -25,7 +25,7 @@ export class TranscribeSpeechToText implements SpeechToText {
     this.languageCode = options.languageCode;
   }
 
-  async transcribe(audio: AsyncIterable<Buffer>, format: PcmFormat, signal?: AbortSignal): Promise<string> {
+  async transcribe(audio: AsyncIterable<Buffer>, format: PcmFormat, signal?: AbortSignal, hooks?: TranscriptionHooks): Promise<string> {
     if (format.encoding !== 'pcm_s16le' || format.channels !== 1) {
       throw new Error('Transcribe streaming expects mono 16-bit little-endian PCM');
     }
@@ -47,12 +47,21 @@ export class TranscribeSpeechToText implements SpeechToText {
     );
 
     const finals: string[] = [];
+    let reported = '';
     for await (const event of response.TranscriptResultStream ?? []) {
       if (event.TranscriptEvent) {
+        // The sentence still being spoken arrives as partial results, replaced by a final one.
+        let partial = '';
         for (const result of event.TranscriptEvent.Transcript?.Results ?? []) {
-          if (result.IsPartial) continue;
           const text = result.Alternatives?.[0]?.Transcript?.trim();
-          if (text) finals.push(text);
+          if (!text) continue;
+          if (result.IsPartial) partial = text;
+          else finals.push(text);
+        }
+        const soFar = [...finals, partial].join(' ').trim();
+        if (soFar.length > 0 && soFar !== reported) {
+          reported = soFar;
+          hooks?.onPartial?.(soFar);
         }
         continue;
       }

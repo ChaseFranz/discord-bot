@@ -17,7 +17,7 @@ export interface CaptureOptions {
 }
 
 export const DEFAULT_CAPTURE_OPTIONS: CaptureOptions = {
-  silenceMs: 1_200,
+  silenceMs: 600,
   minSpeechMs: 400,
   maxUtteranceMs: 30_000,
 };
@@ -25,7 +25,11 @@ export const DEFAULT_CAPTURE_OPTIONS: CaptureOptions = {
 export interface CapturedUtterance {
   userId: string;
   text: string;
+  /** When they started talking. */
   startedAt: number;
+  /** When the last of their audio arrived: the moment they stopped talking. */
+  lastAudioAt: number;
+  /** When the transcript was ready. */
   endedAt: number;
 }
 
@@ -40,6 +44,10 @@ export interface CaptureContext {
   signal?: AbortSignal;
   /** Told how many seconds of audio were streamed to speech-to-text (what it bills for). */
   onAudioSent?: (seconds: number) => void;
+  /** Called as audio arrives, with how much this utterance holds so far: they are talking right now. */
+  onAudio?: (audioMs: number) => void;
+  /** The transcript so far, before they have finished. */
+  onPartial?: (text: string) => void;
 }
 
 const CHUNK_MS = 100;
@@ -71,6 +79,13 @@ export async function captureUtterance(context: CaptureContext): Promise<Capture
   });
 
   let bytesSent = 0;
+  let bytesHeard = 0;
+  let lastAudioAt = startedAt;
+  const heard = (chunk: Buffer) => {
+    bytesHeard += chunk.length;
+    lastAudioAt = clock();
+    context.onAudio?.((bytesHeard / BYTES_PER_SECOND) * 1000);
+  };
   try {
     const chunks = rechunk(mono, monoBytesFor(CHUNK_MS))[Symbol.asyncIterator]();
 
@@ -81,6 +96,7 @@ export async function captureUtterance(context: CaptureContext): Promise<Capture
     while (headBytes < minBytes) {
       const next = await chunks.next();
       if (next.done || signal?.aborted) return null;
+      heard(next.value);
       head.push(next.value);
       headBytes += next.value.length;
     }
@@ -93,6 +109,7 @@ export async function captureUtterance(context: CaptureContext): Promise<Capture
       for (;;) {
         const next = await chunks.next();
         if (next.done || signal?.aborted) return;
+        heard(next.value);
         bytesSent += next.value.length;
         yield next.value;
       }
@@ -100,14 +117,18 @@ export async function captureUtterance(context: CaptureContext): Promise<Capture
 
     let text: string;
     try {
-      text = await stt.transcribe(audio(), { encoding: 'pcm_s16le', sampleRate: DISCORD_SAMPLE_RATE, channels: 1 }, signal);
+      text = await stt.transcribe(audio(), { encoding: 'pcm_s16le', sampleRate: DISCORD_SAMPLE_RATE, channels: 1 }, signal, {
+        onPartial: (partial) => {
+          if (!signal?.aborted) context.onPartial?.(partial);
+        },
+      });
     } catch (error) {
       if (signal?.aborted) return null;
       throw error;
     }
     if (signal?.aborted) return null;
     const endedAt = clock();
-    return text.length > 0 ? { userId, text, startedAt, endedAt } : null;
+    return text.length > 0 ? { userId, text, startedAt, lastAudioAt, endedAt } : null;
   } finally {
     clearTimeout(capTimer);
     signal?.removeEventListener('abort', endInput);

@@ -8,7 +8,13 @@ import type { Schedule } from '../util/schedule.js';
 import type { CapturedUtterance } from './SpeechCapture.js';
 import { VoiceSession, type VoiceSessionDeps } from './VoiceSession.js';
 
-export type UtteranceHandler = (session: VoiceSession, utterance: CapturedUtterance) => Promise<void>;
+/** What the conversation side hears from every listening session; see VoiceListener. */
+export interface CallListener {
+  utterance(session: VoiceSession, utterance: CapturedUtterance): Promise<void>;
+  speaking?(session: VoiceSession, userId: string, audioMs: number): void;
+  partial?(session: VoiceSession, userId: string, text: string): void;
+  captureEnded?(session: VoiceSession, userId: string, heard: boolean): void;
+}
 export type ChannelResolver = (guildId: string, channelId: string) => Promise<VoiceBasedChannel | null>;
 
 export interface VoiceSessionManagerDeps extends VoiceSessionDeps {
@@ -36,7 +42,7 @@ const READY_TIMEOUT_MS = 30_000;
 /** Owns at most one VoiceSession per guild and decides when to join, move and leave. */
 export class VoiceSessionManager implements MusicHost {
   private readonly sessions = new Map<string, VoiceSession>();
-  private utteranceHandler: UtteranceHandler | undefined;
+  private callListener: CallListener | undefined;
   private readonly endedListeners: Array<(guildId: string) => void> = [];
   private readonly transcriptEndedListeners: Array<(record: VoiceSessionRecord) => void> = [];
   /** Pending auto-leave per guild, while the bot is alone in its channel. */
@@ -44,9 +50,9 @@ export class VoiceSessionManager implements MusicHost {
 
   constructor(private readonly deps: VoiceSessionManagerDeps) {}
 
-  /** Receives every transcribed utterance while a session is listening. */
-  setUtteranceHandler(handler: UtteranceHandler): void {
-    this.utteranceHandler = handler;
+  /** Receives what is said (and that someone is talking) while a session is listening. */
+  setCallListener(listener: CallListener): void {
+    this.callListener = listener;
   }
 
   /** Called with the guild id whenever a session ends (left, kicked, or disconnected). */
@@ -176,12 +182,15 @@ export class VoiceSessionManager implements MusicHost {
       startedAt: this.deps.clock(),
     });
     session.transcriptSessionId = record.id;
-    session.startListening((utterance) => {
-      const handler = this.utteranceHandler;
-      if (!handler) return;
-      handler(session, utterance).catch((error: unknown) =>
-        this.deps.logger.error(`Handling an utterance failed: ${describeError(error)}`),
-      );
+    session.startListening({
+      utterance: (utterance) => {
+        this.callListener
+          ?.utterance(session, utterance)
+          .catch((error: unknown) => this.deps.logger.error(`Handling an utterance failed: ${describeError(error)}`));
+      },
+      speaking: (userId, audioMs) => this.callListener?.speaking?.(session, userId, audioMs),
+      partial: (userId, text) => this.callListener?.partial?.(session, userId, text),
+      captureEnded: (userId, heard) => this.callListener?.captureEnded?.(session, userId, heard),
     });
   }
 

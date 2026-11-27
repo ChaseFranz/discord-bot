@@ -97,7 +97,7 @@ describe('MentionChat', () => {
     await chat.handle(message(`<@${BOT}> say hi to <@222>`));
     expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({
-      scope: { guildId: 'g', userId: 'alice' }, modality: 'text', userDisplayName: 'Alice', text: 'say hi to @Sam (user 222)',
+      scope: { guildId: 'g', userId: 'alice' }, userDisplayName: 'Alice', text: 'say hi to @Sam (user 222)',
       textChannelId: 'chan-1', channelName: 'general', images: [],
     });
     expect(sent).toEqual([{ kind: 'reply', content: 'Hello Alice!', allowedMentions: { parse: [], repliedUser: true } }]);

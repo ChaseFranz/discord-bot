@@ -118,6 +118,7 @@ export async function openCore(
         memories: storage.memories,
         usage,
         budget: usage,
+        saveCallTurnsToThreads: config.call.saveTurnsToThreads,
       });
     },
     async close() {

@@ -7,6 +7,12 @@ export type Effort = (typeof EFFORT_LEVELS)[number];
 
 export const POLLY_ENGINES = ['standard', 'neural', 'long-form', 'generative'] as const;
 export type PollyEngine = (typeof POLLY_ENGINES)[number];
+/** Who may carry on talking to the assistant in a call without its name. */
+export const FOLLOW_UPS = ['askers', 'everyone', 'always'] as const;
+export type FollowUps = (typeof FOLLOW_UPS)[number];
+/** Whose voice makes the assistant pause mid-reply. */
+export const BARGE_IN = ['askers', 'everyone', 'off'] as const;
+export type BargeIn = (typeof BARGE_IN)[number];
 
 /**
  * How the bot reaches Claude.
@@ -47,8 +53,13 @@ const envSchema = z.object({
   ASSISTANT_NAME: z.string().default('Nimbus'),
   WAKE_WORD: z.string().optional(),
   WAKE_SOUND_ENABLED: z.stringbool().default(true),
-  AMBIENT_CONTEXT_MINUTES: z.coerce.number().min(0).max(60).default(3),
   FOLLOW_UP_SECONDS: z.coerce.number().min(0).max(60).default(8),
+  VOICE_FOLLOW_UPS: z.enum(FOLLOW_UPS).default('everyone'),
+  VOICE_SILENCE_MS: z.coerce.number().int().min(200).max(3000).default(600),
+  VOICE_BARGE_IN: z.enum(BARGE_IN).default('askers'),
+  VOICE_BARGE_IN_MS: z.coerce.number().int().min(100).max(5000).default(500),
+  VOICE_ACKNOWLEDGE: z.stringbool().default(true),
+  VOICE_SAVE_TO_THREADS: z.stringbool().default(true),
   AUTO_LEAVE_MINUTES: z.coerce.number().min(0).max(24 * 60).default(2),
   TIMEZONE: z.string().optional(),
 
@@ -111,12 +122,26 @@ export interface AppConfig {
     wakeWord: string;
     /** Play a chime when the assistant hears its name. */
     wakeSound: boolean;
-    ambientContextMinutes: number;
-    /** How long after a spoken reply the same person can carry on without the wake word (0 = off). */
+    /** How long after a spoken reply people can carry on without the wake word (0 = off). */
     followUpSeconds: number;
     /** Leave a voice channel after it has been empty this long (0 = stay). */
     autoLeaveMinutes: number;
     timeZone: string;
+  };
+  /** How the assistant takes part in a call. */
+  call: {
+    /** Who may carry on without the wake word: the people just answered, everyone, or always everyone. */
+    followUps: FollowUps;
+    /** How long someone must be quiet before what they said counts as finished. */
+    silenceMs: number;
+    /** Whose voice makes the assistant pause mid-reply. */
+    bargeIn: BargeIn;
+    /** How much they must say before it pauses (shorter sounds are ignored). */
+    bargeInMs: number;
+    /** Tell someone "one sec" when they ask for something while a reply to someone else is playing. */
+    acknowledge: boolean;
+    /** Also keep what each person asked in a call, and the reply, in their own typed thread. */
+    saveTurnsToThreads: boolean;
   };
   usage: {
     /** Daily spending cap per server in USD (0 = track spending without a cap). */
@@ -191,10 +216,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       name: e.ASSISTANT_NAME,
       wakeWord: (e.WAKE_WORD ?? e.ASSISTANT_NAME).toLowerCase(),
       wakeSound: e.WAKE_SOUND_ENABLED,
-      ambientContextMinutes: e.AMBIENT_CONTEXT_MINUTES,
       followUpSeconds: e.FOLLOW_UP_SECONDS,
       autoLeaveMinutes: e.AUTO_LEAVE_MINUTES,
       timeZone,
+    },
+    call: {
+      followUps: e.VOICE_FOLLOW_UPS,
+      silenceMs: e.VOICE_SILENCE_MS,
+      bargeIn: e.VOICE_BARGE_IN,
+      bargeInMs: e.VOICE_BARGE_IN_MS,
+      acknowledge: e.VOICE_ACKNOWLEDGE,
+      saveTurnsToThreads: e.VOICE_SAVE_TO_THREADS,
     },
     usage: {
       dailyBudgetUsd: e.DAILY_BUDGET_USD,

@@ -9,6 +9,9 @@ export interface AudioSink<A> {
   stop(): void;
   /** Releases audio that will never be played. */
   discard(audio: A): void;
+  /** Freezes what is playing mid-word; play() stays pending until resume() or stop(). */
+  pause(): void;
+  resume(): void;
 }
 
 export interface SpeechQueueHooks {
@@ -18,13 +21,23 @@ export interface SpeechQueueHooks {
   idle(): void;
 }
 
+/** How a piece of speech ended: heard in full, cut off while playing, or never played. */
+export type PieceEnding = 'played' | 'cut' | 'dropped';
+
+/** Told what happens to one piece, so the caller knows what has actually been heard. */
+export interface PieceHooks {
+  /** The piece has started playing. */
+  started?(): void;
+  ended?(how: PieceEnding): void;
+}
+
 /**
  * One reply being spoken piece by piece (sentence by sentence while the model is still writing).
  * Cancelling it drops only its own pieces; other queued speech keeps playing.
  */
 export interface SpokenReply {
   /** Queues another piece. Ignored once the reply is cancelled. */
-  add(label: string, prepare: () => Promise<unknown>): void;
+  add(label: string, prepare: () => Promise<unknown>, hooks?: PieceHooks): void;
   /** Stops this reply now and drops the rest of it. */
   cancel(): void;
   readonly cancelled: boolean;
@@ -44,7 +57,12 @@ interface Item<A> {
   /** Started ahead of time so the next piece is ready the moment the current one ends. */
   prepared?: Promise<A | undefined>;
   owner: Owner | undefined;
+  hooks: PieceHooks | undefined;
   generation: number;
+  /** Stopped while it was playing. */
+  cut: boolean;
+  /** Queued to play next, ahead of ordinary items. */
+  next: boolean;
   settle: () => void;
   done: Promise<void>;
 }
@@ -57,7 +75,7 @@ const PREFETCH = 2;
  * Plays prepared audio (synthesised speech, chimes) one item at a time, in order. While an item
  * plays, the next one is already being prepared, so consecutive sentences follow without a gap.
  * stopAll() and SpokenReply.cancel() take effect immediately, even while an item is still being
- * prepared.
+ * prepared. pause() freezes everything where it is, mid-word, until resume().
  */
 export class SpeechQueue<A> {
   private readonly items: Array<Item<A>> = [];
@@ -65,8 +83,11 @@ export class SpeechQueue<A> {
   private playing = false;
   private active = false;
   private pumping = false;
+  private held = false;
   private generation = 0;
   private interruptCurrent: (() => void) | undefined;
+  /** Wakes an item that is ready to play but waiting for resume(). */
+  private wake: (() => void) | undefined;
 
   constructor(
     private readonly sink: AudioSink<A>,
@@ -79,9 +100,21 @@ export class SpeechQueue<A> {
     return this.current !== undefined || this.items.length > 0;
   }
 
+  get paused(): boolean {
+    return this.held;
+  }
+
   /** Queues one item; resolves when it has played (or was dropped). */
-  enqueue(label: string, prepare: () => Promise<A>): Promise<void> {
-    return this.push(label, prepare, undefined);
+  enqueue(label: string, prepare: () => Promise<A>, hooks?: PieceHooks): Promise<void> {
+    return this.push(label, prepare, undefined, hooks, false);
+  }
+
+  /**
+   * Queues one item to play next, ahead of everything already waiting (a short interjection).
+   * Several of these play in the order they were queued.
+   */
+  enqueueNext(label: string, prepare: () => Promise<A>, hooks?: PieceHooks): Promise<void> {
+    return this.push(label, prepare, undefined, hooks, true);
   }
 
   openReply(): SpokenReply {
@@ -89,9 +122,12 @@ export class SpeechQueue<A> {
     const pieces: Array<Promise<void>> = [];
     const ended = () => owner.cancelled || owner.generation !== this.generation;
     return {
-      add: (label, prepare) => {
-        if (ended()) return;
-        pieces.push(this.push(label, prepare as () => Promise<A>, owner));
+      add: (label, prepare, hooks) => {
+        if (ended()) {
+          hooks?.ended?.('dropped');
+          return;
+        }
+        pieces.push(this.push(label, prepare as () => Promise<A>, owner, hooks, false));
       },
       cancel: () => {
         if (owner.cancelled) return;
@@ -108,19 +144,47 @@ export class SpeechQueue<A> {
     };
   }
 
-  /** Stops what's playing and drops everything queued. Returns whether anything was. */
+  /** Stops what's playing and drops everything queued (a pause ends too). Returns whether anything was. */
   stopAll(): boolean {
     const wasBusy = this.busy;
     this.generation++;
+    this.held = false;
     this.dropQueued(() => true);
     if (this.current) this.stopCurrent();
     return wasBusy;
   }
 
-  private push(label: string, prepare: () => Promise<A>, owner: Owner | undefined): Promise<void> {
+  /** Freezes speech where it is: the current piece stops mid-word and nothing new starts. */
+  pause(): void {
+    if (this.held) return;
+    this.held = true;
+    if (this.playing) this.sink.pause();
+  }
+
+  /** Carries on from where pause() froze things. */
+  resume(): void {
+    if (!this.held) return;
+    this.held = false;
+    if (this.playing) this.sink.resume();
+    this.wake?.();
+  }
+
+  private push(
+    label: string,
+    prepare: () => Promise<A>,
+    owner: Owner | undefined,
+    hooks: PieceHooks | undefined,
+    next: boolean,
+  ): Promise<void> {
     let settle!: () => void;
     const done = new Promise<void>((resolve) => (settle = resolve));
-    this.items.push({ label, prepare, owner, generation: this.generation, settle, done });
+    const item: Item<A> = { label, prepare, owner, hooks, generation: this.generation, cut: false, next, settle, done };
+    if (next) {
+      const ahead = this.items.findIndex((waiting) => !waiting.next);
+      this.items.splice(ahead < 0 ? this.items.length : ahead, 0, item);
+    } else {
+      this.items.push(item);
+    }
     this.prefetch();
     void this.pump();
     return done;
@@ -152,17 +216,31 @@ export class SpeechQueue<A> {
     }
   }
 
-  /** Settles a dropped item, discarding its audio if preparation already started. */
+  /** Settles an item that will not be played, discarding its audio if preparation already started. */
   private release(item: Item<A>): void {
     void item.prepared?.then((audio) => {
       if (audio !== undefined) this.sink.discard(audio);
     });
+    this.tell(item, 'dropped');
     item.settle();
   }
 
+  private tell(item: Item<A>, how: PieceEnding | 'started'): void {
+    try {
+      if (how === 'started') item.hooks?.started?.();
+      else item.hooks?.ended?.(how);
+    } catch (error) {
+      this.logger.warn(`A listener for ${item.label} failed: ${describeError(error)}`);
+    }
+  }
+
   private stopCurrent(): void {
-    if (this.playing) this.sink.stop();
-    else this.interruptCurrent?.();
+    if (this.playing) {
+      if (this.current) this.current.cut = true;
+      this.sink.stop();
+    } else {
+      this.interruptCurrent?.();
+    }
   }
 
   private async pump(): Promise<void> {
@@ -203,13 +281,31 @@ export class SpeechQueue<A> {
       this.release(item);
       return;
     }
-    if (audio === undefined) return;
+    if (audio === undefined) {
+      this.tell(item, 'dropped');
+      return;
+    }
+
+    // Paused: the piece waits here, ready, until resume() (or until it's cancelled).
+    if (this.held) {
+      const interrupted = await new Promise<boolean>((resolve) => {
+        this.wake = () => resolve(false);
+        this.interruptCurrent = () => resolve(true);
+      });
+      this.wake = undefined;
+      this.interruptCurrent = undefined;
+      if (interrupted || this.cancelled(item)) {
+        this.release(item);
+        return;
+      }
+    }
 
     if (!this.active) {
       this.active = true;
       this.hooks.started();
     }
     this.playing = true;
+    this.tell(item, 'started');
     try {
       await this.sink.play(audio);
     } catch (error) {
@@ -217,5 +313,6 @@ export class SpeechQueue<A> {
     } finally {
       this.playing = false;
     }
+    this.tell(item, item.cut ? 'cut' : 'played');
   }
 }

@@ -6,7 +6,7 @@ import { SqliteMemoryRepository } from '../../src/storage/sqlite/SqliteMemoryRep
 import { SqliteTranscriptRepository } from '../../src/storage/sqlite/SqliteTranscriptRepository.js';
 
 function context(guildId: string, userId: string, userDisplayName = userId): ToolContext {
-  return { guildId, userId, userDisplayName, modality: 'text', voiceChannelId: undefined, textChannelId: 'chat', signals: { silenceRequested: false } };
+  return { guildId, userId, userDisplayName, modality: 'text', voiceChannelId: undefined, textChannelId: 'chat', signals: { silenceRequested: false, stopRequested: false } };
 }
 
 describe('memory MCP server via McpToolProvider', () => {

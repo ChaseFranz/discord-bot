@@ -58,10 +58,9 @@ describe('loadConfig', () => {
   });
 
   it('parses booleans and numbers', () => {
-    const config = loadConfig({ ...required, WEB_SEARCH_ENABLED: 'false', WAKE_SOUND_ENABLED: 'false', AMBIENT_CONTEXT_MINUTES: '5', MEMORY_RETENTION_DAYS: '0' });
+    const config = loadConfig({ ...required, WEB_SEARCH_ENABLED: 'false', WAKE_SOUND_ENABLED: 'false', MEMORY_RETENTION_DAYS: '0' });
     expect(config.claude.webSearchEnabled).toBe(false);
     expect(config.assistant.wakeSound).toBe(false);
-    expect(config.assistant.ambientContextMinutes).toBe(5);
     expect(config.storage.retentionDays).toBe(0);
   });
 
@@ -94,6 +93,24 @@ describe('loadConfig', () => {
     expect(custom.usage).toMatchObject({ dailyBudgetUsd: 0, transcribeUsdPerMinute: 0.024 });
     expect(() => loadConfig({ ...required, DAILY_BUDGET_USD: '-1' })).toThrow(ConfigError);
     expect(() => loadConfig({ ...required, FOLLOW_UP_SECONDS: 'soon' })).toThrow(/FOLLOW_UP_SECONDS/);
+  });
+
+  it('defaults how it takes part in a call, and validates each setting', () => {
+    expect(loadConfig({ ...required }).call).toEqual({
+      followUps: 'everyone', silenceMs: 600, bargeIn: 'askers', bargeInMs: 500, acknowledge: true, saveTurnsToThreads: true,
+    });
+    const custom = loadConfig({
+      ...required, VOICE_FOLLOW_UPS: 'always', VOICE_SILENCE_MS: '900', VOICE_BARGE_IN: 'off', VOICE_BARGE_IN_MS: '800',
+      VOICE_ACKNOWLEDGE: 'false', VOICE_SAVE_TO_THREADS: 'false',
+    });
+    expect(custom.call).toEqual({
+      followUps: 'always', silenceMs: 900, bargeIn: 'off', bargeInMs: 800, acknowledge: false, saveTurnsToThreads: false,
+    });
+    expect(() => loadConfig({ ...required, VOICE_FOLLOW_UPS: 'nobody' })).toThrow(/VOICE_FOLLOW_UPS/);
+    expect(() => loadConfig({ ...required, VOICE_BARGE_IN: 'sometimes' })).toThrow(/VOICE_BARGE_IN/);
+    // Too short a silence would cut people off between words.
+    expect(() => loadConfig({ ...required, VOICE_SILENCE_MS: '50' })).toThrow(/VOICE_SILENCE_MS/);
+    expect(() => loadConfig({ ...required, VOICE_BARGE_IN_MS: '20' })).toThrow(/VOICE_BARGE_IN_MS/);
   });
 
   it('switches storage to DynamoDB tables', () => {

@@ -16,7 +16,7 @@ const context = (overrides: Partial<ToolContext> = {}): ToolContext => ({
   modality: 'voice',
   voiceChannelId: 'vc',
   textChannelId: 'vc',
-  signals: { silenceRequested: false },
+  signals: { silenceRequested: false, stopRequested: false },
   ...overrides,
 });
 
@@ -115,7 +115,18 @@ describe('music and voice tools', () => {
     const voice = createVoiceToolProvider({ get: () => ({ stopSpeaking: () => ((stopped = true), true) }) });
     const ctx = context();
     expect(await voice.callTool('stop_speaking', {}, ctx)).toEqual({ content: 'Stopped speaking.' });
-    expect(ctx.signals.silenceRequested).toBe(true);
+    expect(ctx.signals).toEqual({ silenceRequested: true, stopRequested: true });
     expect(stopped).toBe(true);
+  });
+
+  it('say_nothing flags the turn silent without stopping anything', async () => {
+    let stopped = false;
+    const voice = createVoiceToolProvider({ get: () => ({ stopSpeaking: () => ((stopped = true), true) }) });
+    const ctx = context();
+    expect(await voice.callTool('say_nothing', {}, ctx)).toEqual({ content: 'Staying quiet.' });
+    // Whatever was being said carries on: only this turn stays quiet.
+    expect(ctx.signals).toEqual({ silenceRequested: true, stopRequested: false });
+    expect(stopped).toBe(false);
+    expect(voice.listTools().map((tool) => tool.name)).toEqual(['say_nothing', 'stop_speaking']);
   });
 });

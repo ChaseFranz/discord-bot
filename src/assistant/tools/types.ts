@@ -21,8 +21,10 @@ export interface ToolResult {
 
 /** Mutable flags a tool can set for the turn it runs in. */
 export interface TurnSignals {
-  /** Set by stop_speaking: don't voice a reply for this turn. */
+  /** Set by say_nothing and stop_speaking: don't voice a reply for this turn. */
   silenceRequested: boolean;
+  /** Set by stop_speaking: someone told the assistant to stop, so whatever it was saying ends too. */
+  stopRequested: boolean;
 }
 
 /** Who a tool call is acting for. Filled in by the harness, never by the model. */

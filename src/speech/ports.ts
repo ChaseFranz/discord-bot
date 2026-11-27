@@ -7,6 +7,12 @@ export interface PcmFormat {
   channels: 1;
 }
 
+/** Optional callbacks while one utterance is being transcribed. */
+export interface TranscriptionHooks {
+  /** The transcript so far, while the person is still talking. It can still change. */
+  onPartial?(text: string): void;
+}
+
 /**
  * Speech-to-text port. Implementations: AWS Transcribe streaming (today). Others (local
  * Whisper, Deepgram, ...) can be added without touching the voice pipeline.
@@ -17,7 +23,7 @@ export interface SpeechToText {
    * implementations can start before the speaker has finished. Resolves to the transcript
    * ('' when nothing intelligible was said).
    */
-  transcribe(audio: AsyncIterable<Buffer>, format: PcmFormat, signal?: AbortSignal): Promise<string>;
+  transcribe(audio: AsyncIterable<Buffer>, format: PcmFormat, signal?: AbortSignal, hooks?: TranscriptionHooks): Promise<string>;
 }
 
 export interface SynthesizedSpeech {
