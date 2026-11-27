@@ -3,4 +3,4 @@
  * commands themselves, so the Lambda that answers Discord within 3 seconds doesn't load discord.js
  * just to know whether its "thinking…" should be ephemeral. A test checks it matches the commands.
  */
-export const EPHEMERAL_COMMANDS: ReadonlySet<string> = new Set(['memories', 'privacy', 'usage']);
+export const EPHEMERAL_COMMANDS: ReadonlySet<string> = new Set(['memories', 'privacy', 'usage', 'musichelper']);

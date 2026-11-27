@@ -45,7 +45,9 @@ test('runs nothing all the time: no NAT gateway, no ECS service, no provisioned 
 });
 
 test('gives Discord a public URL to the edge, which only knows the public key and the worker', () => {
-  cloud.hasResourceProperties('AWS::Lambda::Url', { AuthType: 'NONE' });
+  // Two public addresses in all: this one for Discord, and the one music helpers talk to.
+  cloud.resourceCountIs('AWS::Lambda::Url', 2);
+  cloud.allResourcesProperties('AWS::Lambda::Url', { AuthType: 'NONE' });
   const functions = cloud.findResources('AWS::Lambda::Function');
   const edge = Object.values(functions).find((fn) => fn.Properties.FunctionName === 'nimbus-edge')!;
   assert.deepEqual(Object.keys(edge.Properties.Environment.Variables).sort(), ['DISCORD_PUBLIC_KEY', 'NODE_OPTIONS', 'WORKER_FUNCTION_NAME']);
@@ -71,33 +73,88 @@ test('passes the token to the voice task as an ECS secret and sets the time zone
   cloud.resourceCountIs('AWS::SecretsManager::Secret', 0);
 });
 
-test('turns music off on AWS unless asked: YouTube refuses audio to AWS addresses', () => {
+test('has music fetched by music helpers (YouTube refuses audio to AWS addresses), unless it is switched off', () => {
+  const music = { MUSIC_ENABLED: 'true', MUSIC_SOURCE: 'helpers', MUSIC_RELAY_BUCKET: Match.anyValue(), MUSIC_HELPER_API_URL: Match.anyValue() };
+  // The worker needs it too: it answers /play itself when nobody is running a helper. And every
+  // process that reads the bot's settings gets the same ones, so none of them refuses to start.
+  for (const name of ['nimbus-worker', 'nimbus-reminders']) {
+    cloud.hasResourceProperties('AWS::Lambda::Function', { FunctionName: name, Environment: { Variables: Match.objectLike(music) } });
+  }
   cloud.hasResourceProperties('AWS::ECS::TaskDefinition', {
-    ContainerDefinitions: [Match.objectLike({ Environment: Match.arrayWith([{ Name: 'MUSIC_ENABLED', Value: 'false' }]) })],
+    ContainerDefinitions: [
+      Match.objectLike({
+        Environment: Match.arrayWith([
+          { Name: 'MUSIC_ENABLED', Value: 'true' },
+          { Name: 'MUSIC_SOURCE', Value: 'helpers' },
+        ]),
+      }),
+    ],
   });
-  // The worker checks it too, so /play doesn't start the voice task just to say music is off.
-  cloud.hasResourceProperties('AWS::Lambda::Function', {
+
+  const withoutMusic = Template.fromStack(
+    new NimbusCloudStack(new App({ context: { 'aws:cdk:bundling-stacks': [] } }), 'CloudWithoutMusic', {
+      discord: { clientId: '100000000000000001', guildId: '100000000000000002', publicKey: 'a'.repeat(64) },
+      timeZone: 'America/Chicago',
+      claude: { provider: 'anthropic' },
+      musicEnabled: false,
+      projectRoot: join(__dirname, '..', '..'),
+    }),
+  );
+  withoutMusic.hasResourceProperties('AWS::Lambda::Function', {
     FunctionName: 'nimbus-worker',
     Environment: { Variables: Match.objectLike({ MUSIC_ENABLED: 'false' }) },
   });
 
-  const withMusic = Template.fromStack(
-    new NimbusCloudStack(new App({ context: { 'aws:cdk:bundling-stacks': [] } }), 'CloudWithMusic', {
+  // BOT_SETTINGS can still ask for the bot to fetch music itself.
+  const direct = Template.fromStack(
+    new NimbusCloudStack(new App({ context: { 'aws:cdk:bundling-stacks': [] } }), 'CloudFetchingMusicItself', {
       discord: { clientId: '100000000000000001', guildId: '100000000000000002', publicKey: 'a'.repeat(64) },
       timeZone: 'America/Chicago',
       claude: { provider: 'anthropic' },
-      musicEnabled: true,
+      botSettings: { MUSIC_SOURCE: 'direct' },
       projectRoot: join(__dirname, '..', '..'),
     }),
   );
-  withMusic.hasResourceProperties('AWS::Lambda::Function', {
-    FunctionName: 'nimbus-worker',
-    Environment: { Variables: Match.objectLike({ MUSIC_ENABLED: 'true' }) },
+  for (const name of ['nimbus-worker', 'nimbus-reminders']) {
+    direct.hasResourceProperties('AWS::Lambda::Function', { FunctionName: name, Environment: { Variables: Match.objectLike({ MUSIC_SOURCE: 'direct' }) } });
+  }
+  direct.hasResourceProperties('AWS::ECS::TaskDefinition', {
+    ContainerDefinitions: [Match.objectLike({ Environment: Match.arrayWith([{ Name: 'MUSIC_SOURCE', Value: 'direct' }]) })],
   });
 });
 
+test('relays music through a private bucket that keeps nothing for more than a day', () => {
+  cloud.hasResourceProperties('AWS::S3::Bucket', {
+    PublicAccessBlockConfiguration: { BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true },
+    BucketEncryption: Match.anyValue(),
+    LifecycleConfiguration: { Rules: Match.arrayWith([Match.objectLike({ ExpirationInDays: 1, Status: 'Enabled' })]) },
+  });
+});
+
+test('gives music helpers an address that can reach only their own records, and no secrets', () => {
+  const functions = cloud.findResources('AWS::Lambda::Function', { Properties: { FunctionName: 'nimbus-helper' } });
+  const [helper] = Object.values(functions);
+  assert.deepEqual(Object.keys(helper.Properties.Environment.Variables).sort(), ['DYNAMODB_TABLE', 'GUILD_ID', 'MUSIC_RELAY_BUCKET', 'NODE_OPTIONS']);
+
+  // In the table: reading and updating helper registrations and song requests of this server only.
+  const policies = Object.values(cloud.findResources('AWS::IAM::Policy')).filter((policy) => JSON.stringify(policy.Properties.Roles).includes('Helper'));
+  const statements = policies.flatMap((policy) => policy.Properties.PolicyDocument.Statement as Array<{ Action: string | string[]; Condition?: unknown }>);
+  const table = statements.filter((statement) => [statement.Action].flat().some((action) => action.startsWith('dynamodb:')));
+  assert.equal(table.length, 1);
+  assert.deepEqual(table[0]!.Action, ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:UpdateItem']);
+  assert.deepEqual(table[0]!.Condition, {
+    'ForAllValues:StringEquals': { 'dynamodb:LeadingKeys': ['HELPER#100000000000000002', 'MUSICJOB#100000000000000002'] },
+  });
+  // In the bucket: writing under music/ only (that is what its upload forms are signed with). Nothing
+  // else: no reading or deleting what was uploaded, and no secrets.
+  const rest = statements.filter((statement) => !table.includes(statement));
+  assert.equal(rest.length, 1);
+  assert.equal(rest[0]!.Action, 's3:PutObject');
+  assert.ok(JSON.stringify(rest[0]).endsWith('"/music/*"]]}}'), JSON.stringify(rest[0]));
+});
+
 test('alerts by email on Lambda errors and on AWS spending', () => {
-  cloud.resourceCountIs('AWS::CloudWatch::Alarm', 3);
+  cloud.resourceCountIs('AWS::CloudWatch::Alarm', 4);
   cloud.hasResourceProperties('AWS::Budgets::Budget', { Budget: Match.objectLike({ BudgetLimit: { Amount: 25, Unit: 'USD' } }) });
 });
 

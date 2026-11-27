@@ -4,6 +4,9 @@ import { createVoiceToolProvider } from '../assistant/tools/voiceTools.js';
 import type { DiscordBot } from '../discord/DiscordBot.js';
 import { describeError } from '../logging/logger.js';
 import { MusicService } from '../music/MusicService.js';
+import type { MusicRelay } from '../music/relay/HelperDesk.js';
+import { HelperTrackSource } from '../music/relay/HelperTrackSource.js';
+import type { TrackSource } from '../music/types.js';
 import { YtDlpTrackSource } from '../music/YtDlpTrackSource.js';
 import { CallRecapper } from '../recaps/CallRecapper.js';
 import type { ReminderAlarm } from '../reminders/alarm.js';
@@ -31,7 +34,7 @@ export interface CallStack {
  * Builds the voice side: speech in and out, voice sessions, music, the voice conversation flow,
  * call recaps, the spoken budget announcement, and privacy changes taking effect mid-sentence.
  */
-export async function buildCallStack(core: Core, bot: DiscordBot, alarm: ReminderAlarm): Promise<CallStack> {
+export async function buildCallStack(core: Core, bot: DiscordBot, alarm: ReminderAlarm, relay?: MusicRelay): Promise<CallStack> {
   const { config, logger, clock, storage, usage, privacy } = core;
   const stt = new TranscribeSpeechToText({ region: config.aws.region, languageCode: config.aws.transcribeLanguageCode });
   const tts = new PollyTextToSpeech({ region: config.aws.region, voiceId: config.aws.pollyVoiceId, engine: config.aws.pollyEngine });
@@ -59,17 +62,24 @@ export async function buildCallStack(core: Core, bot: DiscordBot, alarm: Reminde
     autoLeaveMs: config.assistant.autoLeaveMinutes * 60_000,
     schedule: systemSchedule,
   });
-  const tracks = new YtDlpTrackSource({ executable: config.music.ytDlpPath });
-  if (!config.music.enabled) {
-    logger.info('Music is turned off (MUSIC_ENABLED=false): the music commands and Nimbus will say so.');
+  let tracks: TrackSource;
+  if (relay) {
+    // YouTube won't serve this bot directly: a music helper on someone's own computer fetches for it.
+    tracks = new HelperTrackSource({ guildId: config.discord.guildId, desk: relay.desk, board: relay.board, store: relay.store, clock });
+    if (config.music.enabled) logger.info('Music is fetched by music helpers (see /musichelper).');
   } else {
-    // Music needs yt-dlp; nothing else does, so a missing one is reported but not fatal.
-    try {
-      logger.info(`yt-dlp ${await tracks.version()} ready for music.`);
-    } catch (error) {
-      logger.error(`Music won't play until yt-dlp works: ${describeError(error)}`);
+    const direct = new YtDlpTrackSource({ executable: config.music.ytDlpPath });
+    tracks = direct;
+    if (config.music.enabled) {
+      // Music needs yt-dlp; nothing else does, so a missing one is reported but not fatal.
+      try {
+        logger.info(`yt-dlp ${await direct.version()} ready for music.`);
+      } catch (error) {
+        logger.error(`Music won't play until yt-dlp works: ${describeError(error)}`);
+      }
     }
   }
+  if (!config.music.enabled) logger.info('Music is turned off (MUSIC_ENABLED=false): the music commands and Nimbus will say so.');
   const music = new MusicService(voice, tracks, logger);
 
   const assistant = core.assistant([

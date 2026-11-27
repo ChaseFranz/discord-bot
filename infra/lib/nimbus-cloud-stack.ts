@@ -12,6 +12,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import { NodejsFunction, OutputFormat, type NodejsFunctionProps } from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as scheduler from 'aws-cdk-lib/aws-scheduler';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as sns from 'aws-cdk-lib/aws-sns';
@@ -43,8 +44,9 @@ export interface NimbusCloudStackProps extends StackProps {
   /** AWS Budgets alert for the whole account, in USD per month. */
   monthlyBudgetUsd?: number;
   /**
-   * Music from YouTube. Off by default: YouTube won't hand audio to AWS addresses ("Sign in to
-   * confirm you're not a bot"), so the music commands and Nimbus say music is turned off instead.
+   * Music from YouTube. YouTube won't hand audio to AWS addresses ("Sign in to confirm you're not a
+   * bot"), so here it is fetched by music helpers: a small script people run on their own
+   * computers (see helper/README.md). False turns music off altogether. Default true.
    */
   musicEnabled?: boolean;
   /** Other bot settings (the names in .env.example), e.g. { DAILY_BUDGET_USD: '5' }. */
@@ -111,7 +113,7 @@ export class NimbusCloudStack extends Stack {
     // Settings every bot process reads (see src/config/config.ts).
     const botEnvironment: Record<string, string> = {
       ...props.botSettings,
-      MUSIC_ENABLED: String(props.musicEnabled ?? false),
+      MUSIC_ENABLED: String(props.musicEnabled ?? true),
       CLIENT_ID: props.discord.clientId,
       GUILD_ID: props.discord.guildId,
       TIMEZONE: props.timeZone,
@@ -175,6 +177,52 @@ export class NimbusCloudStack extends Stack {
       ...(anthropicKey ? { ANTHROPIC_API_KEY_SECRET: ANTHROPIC_KEY_SECRET_NAME } : {}),
     };
 
+    // Music helpers ---------------------------------------------------------------
+    // Where a helper uploads a song's audio and the voice task reads it back. Nothing is kept: a
+    // song is deleted a day after it was fetched.
+    const relay = new s3.Bucket(this, 'MusicRelay', {
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      enforceSSL: true,
+      lifecycleRules: [{ expiration: Duration.days(1), abortIncompleteMultipartUploadAfter: Duration.days(1) }],
+      // Deleted with the stack. (That needs it to be empty, which it is a day after the last song.)
+      removalPolicy: RemovalPolicy.DESTROY,
+    });
+    // What helpers talk to. It can only do what a valid helper token allows, and holds no secrets.
+    const helper = new NodejsFunction(this, 'Helper', {
+      ...lambdaDefaults('nimbus-helper'),
+      description: 'What music helpers talk to: check in, take a request for a song, report on it',
+      entry: join(props.projectRoot, 'src/aws/lambda/helper.ts'),
+      memorySize: 256,
+      timeout: Duration.seconds(10),
+      environment: {
+        NODE_OPTIONS: '--enable-source-maps',
+        GUILD_ID: props.discord.guildId,
+        DYNAMODB_TABLE: table.tableName,
+        MUSIC_RELAY_BUCKET: relay.bucketName,
+      },
+    });
+    // Only the helper registrations and song requests of this server: nothing else in the table.
+    helper.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:UpdateItem'],
+        resources: [table.tableArn],
+        conditions: {
+          'ForAllValues:StringEquals': { 'dynamodb:LeadingKeys': [`HELPER#${props.discord.guildId}`, `MUSICJOB#${props.discord.guildId}`] },
+        },
+      }),
+    );
+    // The upload forms it hands out are signed with this permission, and it needs no other in the bucket.
+    helper.addToRolePolicy(new iam.PolicyStatement({ actions: ['s3:PutObject'], resources: [relay.arnForObjects('music/*')] }));
+    const helperEndpoint = helper.addFunctionUrl({ authType: lambda.FunctionUrlAuthType.NONE });
+    // For every process that reads the bot's settings, so they all agree. BOT_SETTINGS may say
+    // MUSIC_SOURCE=direct: the bot then fetches music itself, which YouTube refuses from AWS addresses.
+    const musicSettings = {
+      MUSIC_SOURCE: props.botSettings?.MUSIC_SOURCE ?? 'helpers',
+      MUSIC_RELAY_BUCKET: relay.bucketName,
+      MUSIC_HELPER_API_URL: helperEndpoint.url,
+    };
+
     new scheduler.CfnScheduleGroup(this, 'ReminderSchedules', { name: SCHEDULE_GROUP });
     // Built from the name, not a reference: the function's own settings and permissions need its
     // ARN (it re-arms itself), and a reference to itself would be a circular dependency.
@@ -186,7 +234,7 @@ export class NimbusCloudStack extends Stack {
       memorySize: 512,
       // Waits up to 13 minutes for the due time.
       timeout: Duration.minutes(15),
-      environment: { NODE_OPTIONS: '--enable-source-maps', ...botEnvironment, ...secretSettings },
+      environment: { NODE_OPTIONS: '--enable-source-maps', ...botEnvironment, ...secretSettings, ...musicSettings },
     });
     const schedulerRole = new iam.Role(this, 'ReminderSchedulerRole', {
       assumedBy: new iam.ServicePrincipal('scheduler.amazonaws.com'),
@@ -226,7 +274,7 @@ export class NimbusCloudStack extends Stack {
     });
     taskDefinition.addContainer('nimbus', {
       image: ecs.ContainerImage.fromAsset(props.projectRoot, { file: 'Dockerfile', platform: Platform.LINUX_ARM64 }),
-      environment: { ...botEnvironment, ...reminderSettings, AWS_REGION: this.region },
+      environment: { ...botEnvironment, ...reminderSettings, ...musicSettings, AWS_REGION: this.region },
       secrets: {
         DISCORD_BOT_TOKEN: ecs.Secret.fromSecretsManager(discordToken),
         ...(anthropicKey ? { ANTHROPIC_API_KEY: ecs.Secret.fromSecretsManager(anthropicKey) } : {}),
@@ -244,6 +292,7 @@ export class NimbusCloudStack extends Stack {
     queue.grantConsumeMessages(taskRole);
     queue.grantSendMessages(taskRole);
     grantReminderAlarms(taskRole);
+    relay.grantRead(taskRole, 'music/*');
 
     // Commands -------------------------------------------------------------------------
     const worker = new NodejsFunction(this, 'Worker', {
@@ -258,6 +307,7 @@ export class NimbusCloudStack extends Stack {
         ...botEnvironment,
         ...secretSettings,
         ...reminderSettings,
+        ...musicSettings,
         VOICE_TASK_CLUSTER: cluster.clusterArn,
         VOICE_TASK_DEFINITION: taskDefinition.taskDefinitionArn,
         VOICE_TASK_SUBNETS: vpc.publicSubnets.map((subnet) => subnet.subnetId).join(','),
@@ -299,7 +349,7 @@ export class NimbusCloudStack extends Stack {
     if (props.alertEmail) {
       const topic = new sns.Topic(this, 'Alerts', { displayName: 'Nimbus alerts' });
       topic.addSubscription(new subscriptions.EmailSubscription(props.alertEmail));
-      for (const [name, fn] of Object.entries({ Edge: edge, Worker: worker, Reminders: reminders })) {
+      for (const [name, fn] of Object.entries({ Edge: edge, Worker: worker, Reminders: reminders, Helper: helper })) {
         new cloudwatch.Alarm(this, `${name}Errors`, {
           alarmDescription: `Nimbus ${name.toLowerCase()} Lambda is failing`,
           metric: fn.metricErrors({ period: Duration.minutes(5) }),
@@ -335,5 +385,6 @@ export class NimbusCloudStack extends Stack {
     new CfnOutput(this, 'DataTable', { value: table.tableName });
     new CfnOutput(this, 'MemoryTable', { value: memories.tableName });
     new CfnOutput(this, 'VoiceQueueUrl', { value: queue.queueUrl });
+    new CfnOutput(this, 'MusicHelperApiUrl', { value: helperEndpoint.url, description: 'What music helpers talk to (it is inside the code /musichelper gives out)' });
   }
 }

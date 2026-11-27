@@ -10,7 +10,7 @@ import { createReminderToolProvider } from '../../reminders/reminderTools.js';
 import { allCommands, openCore } from '../../runtime/core.js';
 import { systemClock } from '../../util/time.js';
 import { EcsVoiceTaskLauncher } from '../adapters.js';
-import { reminderAlarm, voiceTaskPlumbing } from '../plumbing.js';
+import { musicRelay, reminderAlarm, voiceTaskPlumbing } from '../plumbing.js';
 import { loadAwsSettings, loadSecrets } from '../settings.js';
 import { InteractionWorker } from '../worker.js';
 
@@ -62,6 +62,7 @@ async function createWorker(): Promise<InteractionWorker> {
     privacy: core.privacy,
     usage: core.usage,
     calls,
+    musicHelpers: musicRelay(config, clock)?.desk,
     commands: () => commands,
     mentionChat: false,
   };

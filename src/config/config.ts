@@ -13,6 +13,18 @@ export type FollowUps = (typeof FOLLOW_UPS)[number];
 /** Whose voice makes the assistant pause mid-reply. */
 export const BARGE_IN = ['askers', 'everyone', 'off'] as const;
 export type BargeIn = (typeof BARGE_IN)[number];
+/** Who fetches music from YouTube: the bot itself, or a helper on someone's own computer. */
+export const MUSIC_SOURCES = ['direct', 'helpers'] as const;
+export type MusicSource = (typeof MUSIC_SOURCES)[number];
+
+export interface MusicHelperConfig {
+  /** The public address music helpers talk to. */
+  apiUrl: string;
+  /** The S3 bucket the audio is relayed through. */
+  relayBucket: string;
+  /** Where people download the helper and read how to set it up. */
+  guideUrl: string;
+}
 
 /**
  * How the bot reaches Claude.
@@ -48,7 +60,11 @@ const envSchema = z.object({
   POLLY_ENGINE: z.enum(POLLY_ENGINES).default('generative'),
 
   MUSIC_ENABLED: z.stringbool().default(true),
+  MUSIC_SOURCE: z.enum(MUSIC_SOURCES).default('direct'),
   YT_DLP_PATH: z.string().min(1).default('yt-dlp'),
+  MUSIC_HELPER_API_URL: z.url().optional(),
+  MUSIC_RELAY_BUCKET: z.string().min(3).optional(),
+  MUSIC_HELPER_GUIDE_URL: z.url().default('https://github.com/ChaseFranz/discord-bot/tree/main/helper#readme'),
 
   ASSISTANT_NAME: z.string().default('Nimbus'),
   WAKE_WORD: z.string().optional(),
@@ -114,8 +130,15 @@ export interface AppConfig {
   music: {
     /** Off: the music commands and Nimbus say music is turned off, and nothing is fetched from YouTube. */
     enabled: boolean;
+    /**
+     * Who fetches the audio from YouTube: the bot itself ('direct', with yt-dlp), or a music helper
+     * running on someone's own computer ('helpers', for where YouTube won't serve the bot).
+     */
+    source: MusicSource;
     /** The yt-dlp executable that fetches YouTube audio: a path, or a name on PATH. */
     ytDlpPath: string;
+    /** Set when `source` is 'helpers'. */
+    helpers: MusicHelperConfig | undefined;
   };
   assistant: {
     name: string;
@@ -182,6 +205,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         'or set CLAUDE_PROVIDER=anthropic to use the Claude API directly with ANTHROPIC_API_KEY.',
     );
   }
+  if (cleaned.MUSIC_SOURCE === 'helpers') {
+    // Helpers are coordinated through the AWS deployment's table, bucket and public address.
+    if (cleaned.STORAGE !== 'dynamodb') problems.push('  - MUSIC_SOURCE: "helpers" needs STORAGE=dynamodb (it is for the bot on AWS; on a PC use "direct").');
+    if (!cleaned.MUSIC_HELPER_API_URL) problems.push('  - MUSIC_HELPER_API_URL: required when MUSIC_SOURCE=helpers (the CDK stack sets it).');
+    if (!cleaned.MUSIC_RELAY_BUCKET) problems.push('  - MUSIC_RELAY_BUCKET: required when MUSIC_SOURCE=helpers (the CDK stack sets it).');
+  }
   if (!parsed.success || problems.length > 0) {
     throw new ConfigError(`Invalid configuration:\n${problems.join('\n')}`);
   }
@@ -211,7 +240,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       pollyVoiceId: e.POLLY_VOICE_ID,
       pollyEngine: e.POLLY_ENGINE,
     },
-    music: { enabled: e.MUSIC_ENABLED, ytDlpPath: e.YT_DLP_PATH },
+    music: {
+      enabled: e.MUSIC_ENABLED,
+      source: e.MUSIC_SOURCE,
+      ytDlpPath: e.YT_DLP_PATH,
+      helpers:
+        e.MUSIC_SOURCE === 'helpers'
+          ? { apiUrl: e.MUSIC_HELPER_API_URL!, relayBucket: e.MUSIC_RELAY_BUCKET!, guideUrl: e.MUSIC_HELPER_GUIDE_URL }
+          : undefined,
+    },
     assistant: {
       name: e.ASSISTANT_NAME,
       wakeWord: (e.WAKE_WORD ?? e.ASSISTANT_NAME).toLowerCase(),

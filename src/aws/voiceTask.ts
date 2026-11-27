@@ -10,7 +10,7 @@ import { createLogger, describeError } from '../logging/logger.js';
 import { buildCallStack } from '../runtime/callStack.js';
 import { allCommands, openCore } from '../runtime/core.js';
 import { systemClock } from '../util/time.js';
-import { reminderAlarm, voiceTaskPlumbing } from './plumbing.js';
+import { musicRelay, reminderAlarm, voiceTaskPlumbing } from './plumbing.js';
 import { loadAwsSettings, loadSecrets } from './settings.js';
 
 /**
@@ -47,7 +47,8 @@ async function main(): Promise<void> {
     logger,
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
   });
-  const call = await buildCallStack(core, bot, reminderAlarm(settings, clock));
+  const relay = musicRelay(config, clock);
+  const call = await buildCallStack(core, bot, reminderAlarm(settings, clock), relay);
   const { store, queue } = voiceTaskPlumbing(config, settings, clock);
   const { commands, components } = allCommands();
   const services: AppServices = {
@@ -62,6 +63,7 @@ async function main(): Promise<void> {
     calls: new GatewayCallInfo(bot.client, call.music),
     voice: call.voice,
     music: call.music,
+    musicHelpers: relay?.desk,
     commands: () => commands,
     mentionChat: false,
   };
