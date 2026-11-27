@@ -36,10 +36,13 @@ export const privacyCommand: BotCommand = {
       await context.editReply('Unknown choice.');
       return;
     }
-    // Takes effect at once, even mid-sentence (see the privacy listener in app.ts).
+    // Holds within a second, even mid-sentence and in a call run by another process: a call asks
+    // again whenever someone starts talking and every second while they talk (see SpeechCapture).
     await services.privacy.set(guildId, userId, choice);
     services.logger.info(`${context.userTag} set transcription privacy to ${choice}.`);
-    await context.editReply(`Saved: **${CHOICES[choice]}**.\n${explain(services, choice)}`);
+    await context.editReply(
+      `Saved: **${CHOICES[choice]}**.\n${explain(services, choice)}\nThis takes effect within a second, including in a call that's already going.`,
+    );
   },
 };
 

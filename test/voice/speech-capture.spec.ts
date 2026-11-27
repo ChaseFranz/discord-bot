@@ -106,4 +106,98 @@ describe('captureUtterance', () => {
     expect(await capture(opusPackets(50), stt('too late'), { signal: cancelled.signal })).toBeNull();
     expect(subscriptions).toHaveLength(1); // the cancelled one never started listening
   });
+
+  describe('while someone is still talking', () => {
+    /** A receiver that hands over a packet every few milliseconds, as a person talking does (only faster). */
+    const talking = (packets: Buffer[], everyMs = 5) =>
+      ({
+        subscribe: (userId: string, options: unknown) => {
+          subscriptions.push({ userId, options });
+          let index = 0;
+          const stream = new Readable({ objectMode: true, read: () => undefined });
+          const push = stream.push.bind(stream);
+          const timer = setInterval(() => {
+            if (index < packets.length) push(packets[index++]);
+            else stream.push(null);
+          }, everyMs);
+          // Ended from outside (the capture stops listening) or by running out: either way, no more packets.
+          stream.push = (chunk: unknown) => {
+            if (chunk === null) clearInterval(timer);
+            return push(chunk);
+          };
+          stream.once('close', () => clearInterval(timer));
+          return stream;
+        },
+      }) as unknown as VoiceReceiver;
+    /** Speech-to-text that counts what reaches it, and gives up when told to stop, as the real one does. */
+    const counting = (text: string) => {
+      const heard = { bytes: 0, stopped: false };
+      const speechToText: SpeechToText = {
+        transcribe: async (audio: AsyncIterable<Buffer>, _format: PcmFormat, signal?: AbortSignal) => {
+          for await (const chunk of audio) heard.bytes += chunk.length;
+          heard.stopped = signal?.aborted === true;
+          if (signal?.aborted) throw new Error('The transcription was cancelled.');
+          return text;
+        },
+      };
+      return { heard, speechToText };
+    };
+    const listen = (packets: Buffer[], speechToText: SpeechToText, extra: Partial<CaptureContext>) =>
+      captureUtterance({
+        receiver: talking(packets),
+        userId: 'u-alice',
+        stt: speechToText,
+        options: DEFAULT_CAPTURE_OPTIONS,
+        clock: Date.now,
+        logger: silentLogger(),
+        ...extra,
+      });
+    const EIGHT_SECONDS = opusPackets(400);
+    const ALL_OF_IT = 8 * 48_000 * 2;
+
+    it('stops sending their audio mid-sentence once they may no longer be listened to', async () => {
+      const { heard, speechToText } = counting('never finished');
+      let asked = 0;
+      let secondsSent = 0;
+      const started = Date.now();
+      const utterance = await listen(EIGHT_SECONDS, speechToText, {
+        // Fine for the first few asks; then they opt out (in another process, say).
+        stillAllowed: async () => ++asked <= 6,
+        recheckMs: 30,
+        onAudioSent: (seconds) => (secondsSent = seconds),
+      });
+
+      expect(utterance).toBeNull();
+      expect(asked).toBe(7);
+      // Some of it had gone to speech-to-text; the rest never did, and the transcription was cancelled.
+      expect(heard.bytes).toBeGreaterThan(0);
+      expect(heard.bytes).toBeLessThan(ALL_OF_IT / 2);
+      expect(heard.stopped).toBe(true);
+      expect(secondsSent).toBeCloseTo(heard.bytes / (48_000 * 2), 5);
+      // It did not wait for them to finish (which would have taken two seconds here).
+      expect(Date.now() - started).toBeLessThan(1_500);
+    }, 10_000);
+
+    it('sends nothing at all if that happens before the first of it has gone', async () => {
+      const { heard, speechToText } = counting('never started');
+      const utterance = await listen(EIGHT_SECONDS, speechToText, { stillAllowed: () => false, recheckMs: 10 });
+      expect(utterance).toBeNull();
+      expect(heard.bytes).toBe(0);
+    }, 10_000);
+
+    it('keeps listening while the answer is yes, and when it cannot ask', async () => {
+      const { heard, speechToText } = counting('Nimbus, hello.');
+      let asked = 0;
+      const utterance = await listen(opusPackets(60), speechToText, {
+        stillAllowed: async () => {
+          if (++asked % 2 === 0) throw new Error('the database did not answer');
+          return true;
+        },
+        recheckMs: 20,
+      });
+      expect(utterance).toMatchObject({ text: 'Nimbus, hello.' });
+      expect(asked).toBeGreaterThan(3);
+      expect(heard.bytes).toBe(60 * 0.02 * 48_000 * 2);
+    }, 10_000);
+  });
 });

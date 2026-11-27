@@ -42,6 +42,14 @@ export interface CaptureContext {
   logger: Logger;
   /** Aborting stops listening and cancels the transcription; the capture then resolves to null. */
   signal?: AbortSignal;
+  /**
+   * Asked again and again while they talk: may this person still be listened to? They may opt out
+   * mid-sentence, and where the bot runs as several processes that is only found out by asking.
+   * The first "no" stops the capture there, as an abort would. Not being able to ask is not a no.
+   */
+  stillAllowed?: () => boolean | Promise<boolean>;
+  /** How often `stillAllowed` is asked (default RECHECK_ALLOWED_MS). */
+  recheckMs?: number;
   /** Told how many seconds of audio were streamed to speech-to-text (what it bills for). */
   onAudioSent?: (seconds: number) => void;
   /** Called as audio arrives, with how much this utterance holds so far: they are talking right now. */
@@ -50,6 +58,8 @@ export interface CaptureContext {
   onPartial?: (text: string) => void;
 }
 
+/** How often a capture asks whether its speaker may still be listened to. */
+export const RECHECK_ALLOWED_MS = 1_000;
 const CHUNK_MS = 100;
 const BYTES_PER_SECOND = DISCORD_SAMPLE_RATE * 2;
 
@@ -59,8 +69,11 @@ const BYTES_PER_SECOND = DISCORD_SAMPLE_RATE * 2;
  * Resolves to null for noise (too short), when nothing intelligible was said, or when aborted.
  */
 export async function captureUtterance(context: CaptureContext): Promise<CapturedUtterance | null> {
-  const { receiver, userId, stt, options, clock, logger, signal } = context;
-  if (signal?.aborted) return null;
+  const { receiver, userId, stt, options, clock, logger } = context;
+  if (context.signal?.aborted) return null;
+  // Listening ends when the caller says so, or when asking whether they may still be listened to gets a no.
+  const withdrawn = new AbortController();
+  const signal = context.signal ? AbortSignal.any([context.signal, withdrawn.signal]) : withdrawn.signal;
   const startedAt = clock();
   const opus = receiver.subscribe(userId, {
     end: { behavior: EndBehaviorType.AfterSilence, duration: options.silenceMs },
@@ -72,7 +85,24 @@ export async function captureUtterance(context: CaptureContext): Promise<Capture
     if (!opus.readableEnded && !opus.destroyed) opus.push(null);
   };
   const capTimer = setTimeout(endInput, options.maxUtteranceMs);
-  signal?.addEventListener('abort', endInput, { once: true });
+  signal.addEventListener('abort', endInput, { once: true });
+  let asking = false;
+  const recheck = context.stillAllowed
+    ? setInterval(() => {
+        if (asking || signal.aborted) return;
+        asking = true;
+        void Promise.resolve()
+          .then(() => context.stillAllowed!())
+          .then((allowed) => {
+            if (!allowed) withdrawn.abort();
+          })
+          // They were allowed a moment ago, and the next ask may get through.
+          .catch((error: unknown) => logger.warn(`Could not ask whether ${userId} may still be listened to: ${describeError(error)}`))
+          .finally(() => {
+            asking = false;
+          });
+      }, context.recheckMs ?? RECHECK_ALLOWED_MS)
+    : undefined;
   const piped = pipeline(opus, decoder, mono).catch((error: unknown) => {
     logger.debug(`Audio pipeline for ${userId} ended with an error: ${describeError(error)}`);
     mono.end();
@@ -95,7 +125,7 @@ export async function captureUtterance(context: CaptureContext): Promise<Capture
     const minBytes = monoBytesFor(options.minSpeechMs);
     while (headBytes < minBytes) {
       const next = await chunks.next();
-      if (next.done || signal?.aborted) return null;
+      if (next.done || signal.aborted) return null;
       heard(next.value);
       head.push(next.value);
       headBytes += next.value.length;
@@ -108,7 +138,7 @@ export async function captureUtterance(context: CaptureContext): Promise<Capture
       }
       for (;;) {
         const next = await chunks.next();
-        if (next.done || signal?.aborted) return;
+        if (next.done || signal.aborted) return;
         heard(next.value);
         bytesSent += next.value.length;
         yield next.value;
@@ -119,19 +149,20 @@ export async function captureUtterance(context: CaptureContext): Promise<Capture
     try {
       text = await stt.transcribe(audio(), { encoding: 'pcm_s16le', sampleRate: DISCORD_SAMPLE_RATE, channels: 1 }, signal, {
         onPartial: (partial) => {
-          if (!signal?.aborted) context.onPartial?.(partial);
+          if (!signal.aborted) context.onPartial?.(partial);
         },
       });
     } catch (error) {
-      if (signal?.aborted) return null;
+      if (signal.aborted) return null;
       throw error;
     }
-    if (signal?.aborted) return null;
+    if (signal.aborted) return null;
     const endedAt = clock();
     return text.length > 0 ? { userId, text, startedAt, lastAudioAt, endedAt } : null;
   } finally {
     clearTimeout(capTimer);
-    signal?.removeEventListener('abort', endInput);
+    clearInterval(recheck);
+    signal.removeEventListener('abort', endInput);
     if (!opus.destroyed) opus.destroy();
     await piped;
     if (bytesSent > 0) context.onAudioSent?.(bytesSent / BYTES_PER_SECOND);
