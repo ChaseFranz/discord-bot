@@ -42,7 +42,9 @@ export class MemoryMusicJobBoard implements MusicJobBoard {
   private readonly jobs = new Map<string, MusicJob>();
 
   async post(guildId: string, target: string, at: number): Promise<MusicJob> {
-    const job: MusicJob = { id: randomUUID(), guildId, target, status: 'waiting', createdAt: at, updatedAt: at, helper: null, track: null, chunks: 0, error: null };
+    const job: MusicJob = {
+      id: randomUUID(), guildId, target, status: 'waiting', createdAt: at, updatedAt: at, helper: null, track: null, chunks: 0, error: null, listenedAt: null,
+    };
     this.jobs.set(key(guildId, job.id), job);
     return { ...job };
   }
@@ -79,16 +81,34 @@ export class MemoryMusicJobBoard implements MusicJobBoard {
     if (!job || job.status === 'done' || job.status === 'failed') return;
     Object.assign(job, { status: 'failed', error: reason, updatedAt: at });
   }
+
+  async listening(guildId: string, jobId: string, at: number): Promise<void> {
+    const job = this.jobs.get(key(guildId, jobId));
+    if (job && (job.status === 'claimed' || job.status === 'found')) job.listenedAt = at;
+  }
 }
 
 /** Audio kept in memory. `uploadTarget` points at `uploadUrl`, where something must accept the chunks (see put). */
 export class MemoryAudioRelayStore implements AudioRelayStore {
   private readonly chunks = new Map<string, Uint8Array>();
 
-  constructor(private readonly uploadUrl = 'http://localhost/upload') {}
+  /** How many forms have been handed out. */
+  issued = 0;
+
+  constructor(
+    private readonly uploadUrl = 'http://localhost/upload',
+    private readonly expiresInSeconds = 30 * 60,
+  ) {}
 
   async uploadTarget(guildId: string, jobId: string): Promise<UploadTarget> {
-    return { url: this.uploadUrl, fields: { policy: 'memory' }, keyPrefix: `music/${guildId}/${jobId}/`, maxChunkBytes: MAX_CHUNK_BYTES };
+    this.issued++;
+    return {
+      url: this.uploadUrl,
+      fields: { policy: 'memory' },
+      keyPrefix: `music/${guildId}/${jobId}/`,
+      maxChunkBytes: MAX_CHUNK_BYTES,
+      expiresInSeconds: this.expiresInSeconds,
+    };
   }
 
   async read(guildId: string, jobId: string, index: number): Promise<Uint8Array | undefined> {

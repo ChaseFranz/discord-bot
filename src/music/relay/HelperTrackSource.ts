@@ -2,12 +2,12 @@ import { Readable } from 'node:stream';
 import type { Clock } from '../../util/time.js';
 import { MusicError, type Track, type TrackSource } from '../types.js';
 import { youTubeVideoId } from '../YtDlpTrackSource.js';
-import type { HelperDesk } from './HelperDesk.js';
+import { LISTENING_EVERY_MS, type HelperDesk } from './HelperDesk.js';
 import type { AudioRelayStore, MusicJob, MusicJobBoard } from './ports.js';
 
 export interface HelperTrackSourceDeps {
   guildId: string;
-  desk: Pick<HelperDesk, 'blocker'>;
+  desk: Pick<HelperDesk, 'blocker' | 'guideUrl'>;
   board: MusicJobBoard;
   store: AudioRelayStore;
   clock: Clock;
@@ -15,10 +15,14 @@ export interface HelperTrackSourceDeps {
   checkEveryMs?: number;
   /** Waits `ms`; replaced in tests. */
   sleep?: (ms: number) => Promise<void>;
+  /** Runs `run` every `ms` until the returned function is called; replaced in tests. */
+  every?: (ms: number, run: () => void) => () => void;
 }
 
 /** What a helper reports when the search came back empty. */
 export const NOTHING_FOUND = 'nothing-found';
+/** What a helper reports for a live stream when it has no ffmpeg, which fetching one needs. */
+export const LIVE_NEEDS_FFMPEG = 'live-needs-ffmpeg';
 /** Why a job was given up on when its track left the queue before the helper had finished. */
 const NO_LONGER_WANTED = 'no longer wanted';
 /** A helper asks for work every few seconds, so one that is running has taken the job by now. */
@@ -35,10 +39,17 @@ const PROGRESS_PATIENCE_MS = 30_000;
 export class HelperTrackSource implements TrackSource {
   private readonly checkEveryMs: number;
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly every: (ms: number, run: () => void) => () => void;
 
   constructor(private readonly deps: HelperTrackSourceDeps) {
     this.checkEveryMs = deps.checkEveryMs ?? 250;
     this.sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.every =
+      deps.every ??
+      ((ms, run) => {
+        const timer = setInterval(run, ms);
+        return () => clearInterval(timer);
+      });
   }
 
   async resolve(query: string): Promise<Track | null> {
@@ -60,11 +71,35 @@ export class HelperTrackSource implements TrackSource {
   }
 
   async open(track: Track): Promise<Readable> {
-    if (track.handle) return Readable.from(this.chunks(track.handle));
-    // No audio on its way for this one: ask a helper for it again.
-    const again = await this.resolve(track.url);
-    if (!again?.handle) throw new Error(`Nothing was found for ${track.url}`);
-    return Readable.from(this.chunks(again.handle));
+    let jobId = track.handle;
+    if (jobId) {
+      // Given up on while it waited its turn (a live stream is only sent while someone listens; a
+      // helper may have gone away half-way through a song)? Then it is asked for again.
+      const job = await this.deps.board.get(this.deps.guildId, jobId);
+      if (!job || job.status === 'failed') jobId = undefined;
+    }
+    if (!jobId) {
+      const again = await this.resolve(track.url);
+      if (!again?.handle) throw new Error(`Nothing was found for ${track.url}`);
+      // So that letting go of the track later stops this fetch, not the one before it.
+      track.handle = again.handle;
+      jobId = again.handle;
+    }
+    return this.stream(jobId);
+  }
+
+  /** A job's audio as a stream that stops looking for more the moment it is closed. */
+  private stream(jobId: string): Readable {
+    const closed = new AbortController();
+    const stream = Readable.from(this.chunks(jobId, closed.signal));
+    // Closing a stream made from a generator waits for the generator's current step. Ours may be
+    // waiting for the next part of a song: tell it first, so it stops there.
+    const destroy = stream._destroy.bind(stream);
+    stream._destroy = (error, callback) => {
+      closed.abort();
+      destroy(error, callback);
+    };
+    return stream;
   }
 
   /**
@@ -88,7 +123,7 @@ export class HelperTrackSource implements TrackSource {
       if (job.status === 'found' || job.status === 'done') return job;
       if (job.status === 'failed') {
         if (job.error === NOTHING_FOUND) return undefined;
-        throw new MusicError(`The music helper couldn't get that: ${job.error ?? 'something went wrong'}`);
+        throw new MusicError(this.liveProblem(job) ?? `The music helper couldn't get that: ${job.error ?? 'something went wrong'}`);
       }
       const waited = clock() - job.updatedAt;
       if (job.status === 'waiting' && waited > CLAIM_PATIENCE_MS) {
@@ -101,28 +136,56 @@ export class HelperTrackSource implements TrackSource {
     }
   }
 
-  /** The job's audio in order, each chunk as soon as it has been uploaded. */
-  private async *chunks(jobId: string): AsyncGenerator<Buffer> {
+  /** If a job failed because it is a live stream its helper couldn't fetch: why, for whoever asked for it. */
+  private liveProblem(job: MusicJob): string | undefined {
+    const whose = job.helper ? `${job.helper.userName}'s music helper` : 'the music helper';
+    if (job.error === LIVE_NEEDS_FFMPEG) {
+      return `That's a live stream, and ${whose} has no ffmpeg, which fetching one takes. How to add it: ${this.deps.desk.guideUrl}`;
+    }
+    // An older helper, which doesn't fetch ffmpeg for itself, passes on what yt-dlp said.
+    if (/ffmpeg could not be found/i.test(job.error ?? '')) {
+      return `That's a live stream, and ${whose} is too old to play those. The newer one is here: ${this.deps.desk.guideUrl}`;
+    }
+    return undefined;
+  }
+
+  /** The job's audio in order, each chunk as soon as it has been uploaded, until `closed` (nobody is reading any more). */
+  private async *chunks(jobId: string, closed: AbortSignal): AsyncGenerator<Buffer> {
     const { board, store, clock, guildId } = this.deps;
     let next = 0;
     let lastProgress = clock();
-    for (;;) {
-      const job = await board.get(guildId, jobId);
-      if (!job) throw new Error('The song is no longer available.');
-      while (next < job.chunks) {
-        const bytes = await store.read(guildId, jobId, next);
-        if (!bytes) throw new Error(`Part ${next} of the song is missing.`);
-        yield Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-        next++;
-        lastProgress = clock();
+    let stopListening: (() => void) | undefined;
+    try {
+      for (;;) {
+        const job = await board.get(guildId, jobId);
+        if (closed.aborted) return;
+        if (!job) throw new Error('The song is no longer available.');
+        if (job.track?.live && !stopListening && (job.status === 'claimed' || job.status === 'found')) {
+          // A live stream is sent for as long as someone is listening: say so now, and keep saying
+          // so until this stream is closed (also while the music is paused).
+          const listening = () => void board.listening(guildId, jobId, clock()).catch(() => undefined);
+          listening();
+          stopListening = this.every(LISTENING_EVERY_MS, listening);
+        }
+        while (next < job.chunks) {
+          const bytes = await store.read(guildId, jobId, next);
+          if (closed.aborted) return;
+          if (!bytes) throw new Error(`Part ${next} of the song is missing.`);
+          yield Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+          next++;
+          lastProgress = clock();
+        }
+        if (job.status === 'done') return;
+        if (job.status === 'failed') throw new Error(this.liveProblem(job) ?? `The music helper stopped part-way: ${job.error ?? 'unknown error'}`);
+        if (clock() - lastProgress > PROGRESS_PATIENCE_MS) {
+          await board.abandon(guildId, jobId, 'The music helper stopped sending the song.', clock());
+          throw new Error('The music helper stopped sending the song.');
+        }
+        await this.sleep(this.checkEveryMs);
+        if (closed.aborted) return;
       }
-      if (job.status === 'done') return;
-      if (job.status === 'failed') throw new Error(`The music helper stopped part-way: ${job.error ?? 'unknown error'}`);
-      if (clock() - lastProgress > PROGRESS_PATIENCE_MS) {
-        await board.abandon(guildId, jobId, 'The music helper stopped sending the song.', clock());
-        throw new Error('The music helper stopped sending the song.');
-      }
-      await this.sleep(this.checkEveryMs);
+    } finally {
+      stopListening?.();
     }
   }
 }

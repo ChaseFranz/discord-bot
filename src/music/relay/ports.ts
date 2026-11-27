@@ -42,6 +42,11 @@ export interface RelayedTrack {
   videoId: string;
   title: string;
   durationSeconds?: number;
+  /**
+   * A live stream: it has no end, and its audio arrives only as fast as it is broadcast. It is
+   * sent for as long as someone is listening (see MusicJob.listenedAt), not fetched ahead.
+   */
+  live?: boolean;
 }
 
 export interface MusicJob {
@@ -58,6 +63,11 @@ export interface MusicJob {
   chunks: number;
   /** Why it failed, in words for the person who asked. */
   error: string | null;
+  /**
+   * When the bot last said it is listening to this. It only matters for a live stream, which would
+   * otherwise be sent for ever: one that nobody has listened to for a while is stopped.
+   */
+  listenedAt: number | null;
 }
 
 /** What a helper reports about a job it holds. */
@@ -76,6 +86,8 @@ export interface MusicJobBoard {
   report(guildId: string, jobId: string, helperUserId: string, report: MusicJobReport, at: number): Promise<boolean>;
   /** Marks a job nobody finished as failed, so no helper picks it up or carries on with it. */
   abandon(guildId: string, jobId: string, reason: string, at: number): Promise<void>;
+  /** Notes that the bot is listening to a job that is still going (see MusicJob.listenedAt). */
+  listening(guildId: string, jobId: string, at: number): Promise<void>;
 }
 
 /** What a helper needs to upload a job's audio, one chunk per request. */
@@ -87,6 +99,8 @@ export interface UploadTarget {
   /** Each chunk's `key` field is this followed by its number (see chunkKey). */
   keyPrefix: string;
   maxChunkBytes: number;
+  /** How long the form can be used for. A helper still sending by then asks for a new one. */
+  expiresInSeconds: number;
 }
 
 /** Where a helper puts a job's audio, and where the bot reads it back. */

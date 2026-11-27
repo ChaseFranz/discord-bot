@@ -84,7 +84,7 @@ export class DynamoMusicJobBoard implements MusicJobBoard {
   async post(guildId: string, target: string, at: number): Promise<MusicJob> {
     const job: MusicJob = {
       id: `${pad(at)}-${randomBytes(6).toString('hex')}`,
-      guildId, target, status: 'waiting', createdAt: at, updatedAt: at, helper: null, track: null, chunks: 0, error: null,
+      guildId, target, status: 'waiting', createdAt: at, updatedAt: at, helper: null, track: null, chunks: 0, error: null, listenedAt: null,
     };
     await this.doc.send(
       new PutCommand({
@@ -153,6 +153,15 @@ export class DynamoMusicJobBoard implements MusicJobBoard {
     });
   }
 
+  async listening(guildId: string, jobId: string, at: number): Promise<void> {
+    const attr = names('status');
+    // A stream that is being listened to is kept for a day from now, however long it has been going.
+    await this.update(guildId, jobId, { listenedAt: at, expiresAt: Math.floor((at + JOB_LIFETIME_MS) / 1000) }, `${attr.refs[0]} IN (:claimed, :found)`, attr.map, {
+      ':claimed': 'claimed',
+      ':found': 'found',
+    });
+  }
+
   /** Sets attributes on a job if `condition` holds. Returns whether it did. */
   private async update(
     guildId: string,
@@ -205,7 +214,7 @@ export class S3AudioRelayStore implements AudioRelayStore {
     });
     // The helper sets `key` itself for each chunk.
     const { key: _placeholder, ...rest } = fields;
-    return { url, fields: rest, keyPrefix, maxChunkBytes: MAX_CHUNK_BYTES };
+    return { url, fields: rest, keyPrefix, maxChunkBytes: MAX_CHUNK_BYTES, expiresInSeconds: UPLOAD_WINDOW_SECONDS };
   }
 
   async read(guildId: string, jobId: string, index: number): Promise<Uint8Array | undefined> {
@@ -257,5 +266,6 @@ function toJob(item: Item): MusicJob {
     track: (item.track as RelayedTrack | undefined) ?? null,
     chunks: Number(item.chunks ?? 0),
     error: item.error === undefined || item.error === null ? null : String(item.error),
+    listenedAt: item.listenedAt === undefined || item.listenedAt === null ? null : Number(item.listenedAt),
   };
 }

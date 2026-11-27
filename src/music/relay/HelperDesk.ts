@@ -8,6 +8,14 @@ export const HELPER_POLL_MS = 2_000;
 export const CHECK_IN_EVERY_MS = 10_000;
 /** A helper counts as running if it checked in this recently. */
 export const HELPER_ONLINE_MS = 25_000;
+/** How often the bot says it is still listening to a live stream it is playing. */
+export const LISTENING_EVERY_MS = 20_000;
+/**
+ * A live stream nobody has listened to for this long is stopped: its helper is told so at its next
+ * report. Long enough to cover a few missed check-ins; short enough that a stream left behind by a
+ * call that ended badly doesn't go on using someone's connection.
+ */
+export const UNHEARD_MS = 90_000;
 
 export interface HelperDeskDeps {
   guildId: string;
