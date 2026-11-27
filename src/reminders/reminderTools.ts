@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { NativeToolProvider, defineTool } from '../assistant/tools/nativeTool.js';
 import type { ToolResult } from '../assistant/tools/types.js';
 import type { Reminder, ReminderRepository, RepeatRule } from '../storage/ports.js';
+import type { ReminderAlarm } from './alarm.js';
 import type { Clock } from '../util/time.js';
 import { describeDuration, describeLength, describeLocalTime, parseLocalOrAbsolute } from '../util/zonedTime.js';
 import { RepeatError, WEEKDAY_NAMES, alignFirstOccurrence, buildRepeatRule, describeRepeat, nextOccurrence } from './recurrence.js';
@@ -14,8 +15,8 @@ const MAX_DELAY_SECONDS = 366 * 24 * 60 * 60;
 
 export interface ReminderToolDeps {
   reminders: ReminderRepository;
-  /** Tells the scheduler that reminders were added or removed. */
-  changed: () => void;
+  /** Arranges delivery of new reminders (and calls off cancelled ones). */
+  alarm: ReminderAlarm;
   clock: Clock;
   timeZone: string;
 }
@@ -121,7 +122,7 @@ export function createReminderToolProvider(deps: ReminderToolDeps): NativeToolPr
           durationMs,
           createdAt: now,
         });
-        deps.changed();
+        await deps.alarm.set(reminder);
         const when = `${describeLocalTime(dueAt, deps.timeZone, now)} (in ${describeDuration(dueAt - now)})`;
         const everyone = input.for_everyone ? ', for everyone in the call' : '';
         if (kind === 'timer') {
@@ -156,7 +157,7 @@ export function createReminderToolProvider(deps: ReminderToolDeps): NativeToolPr
           return error(`Reminder #${reminder_id} was set by ${reminder.userName}; only they can cancel it.`);
         }
         await deps.reminders.cancel(context.guildId, reminder_id);
-        deps.changed();
+        await deps.alarm.clear(reminder_id);
         return `Cancelled ${describeReminder(reminder, deps.timeZone, deps.clock())}`;
       },
     }),

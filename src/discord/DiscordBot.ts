@@ -13,7 +13,7 @@ import type { Logger } from '../logging/logger.js';
 import { describeError } from '../logging/logger.js';
 import type { ReminderMessenger } from '../reminders/ReminderDelivery.js';
 import type { VoiceStateChange } from '../voice/VoiceSessionManager.js';
-import type { InteractionRouter } from './InteractionRouter.js';
+import type { GatewayInteractionRouter } from './gateway.js';
 import type { BotCommand } from './types.js';
 
 export interface DiscordBotOptions {
@@ -21,12 +21,15 @@ export interface DiscordBotOptions {
   clientId: string;
   guildId: string;
   logger: Logger;
+  /** Default: guilds, voice states and guild messages (for @mention chat). */
+  intents?: GatewayIntentBits[];
 }
 
 export interface DiscordHandlers {
-  interactions: InteractionRouter;
+  /** Slash commands over the Gateway (not used when they're delivered to Lambda instead). */
+  interactions?: GatewayInteractionRouter;
   /** Every message the bot can see (it only gets the content of ones that mention it). */
-  messages: (message: Message) => Promise<void>;
+  messages?: (message: Message) => Promise<void>;
   voiceStates: (change: VoiceStateChange) => void;
 }
 
@@ -37,7 +40,7 @@ export class DiscordBot implements ReminderMessenger {
   constructor(private readonly options: DiscordBotOptions) {
     // No privileged intents: message content arrives only for messages that mention the bot.
     this.client = new Client({
-      intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.GuildMessages],
+      intents: options.intents ?? [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.GuildMessages],
     });
   }
 
@@ -52,12 +55,17 @@ export class DiscordBot implements ReminderMessenger {
   /** Logs in and resolves once the client is ready. */
   async start(handlers: DiscordHandlers): Promise<void> {
     const { logger } = this.options;
-    this.client.on(Events.InteractionCreate, (interaction) => {
-      handlers.interactions.handle(interaction).catch((error: unknown) => logger.error(`Unhandled interaction error: ${describeError(error)}`));
-    });
-    this.client.on(Events.MessageCreate, (message) => {
-      handlers.messages(message).catch((error: unknown) => logger.error(`Unhandled message error: ${describeError(error)}`));
-    });
+    const { interactions, messages } = handlers;
+    if (interactions) {
+      this.client.on(Events.InteractionCreate, (interaction) => {
+        interactions.handle(interaction).catch((error: unknown) => logger.error(`Unhandled interaction error: ${describeError(error)}`));
+      });
+    }
+    if (messages) {
+      this.client.on(Events.MessageCreate, (message) => {
+        messages(message).catch((error: unknown) => logger.error(`Unhandled message error: ${describeError(error)}`));
+      });
+    }
     this.client.on(Events.VoiceStateUpdate, (oldState: VoiceState, newState: VoiceState) => {
       try {
         handlers.voiceStates({
@@ -83,6 +91,16 @@ export class DiscordBot implements ReminderMessenger {
     });
     await this.client.login(this.options.token);
     await ready;
+  }
+
+  /**
+   * Where Discord sends slash commands: an HTTPS URL (Lambda, on AWS), or undefined for the Gateway.
+   * Discord delivers interactions one way or the other, never both.
+   */
+  async interactionsEndpointUrl(): Promise<string | undefined> {
+    const rest = new REST({ version: '10' }).setToken(this.options.token);
+    const app = (await rest.get(Routes.currentApplication())) as { interactions_endpoint_url?: string | null };
+    return app.interactions_endpoint_url || undefined;
   }
 
   get userId(): string {

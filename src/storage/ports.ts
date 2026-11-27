@@ -319,6 +319,8 @@ export interface UsageRepository {
   add(guildId: string, day: string, lines: readonly UsageLine[]): Promise<void>;
   /** Every metric recorded for a guild on a day. */
   day(guildId: string, day: string): Promise<UsageLine[]>;
+  /** The total cost recorded for a guild on a day (by every process that records usage). */
+  dayTotal(guildId: string, day: string): Promise<number>;
   /** Total cost per day between two days (inclusive), oldest first; days without usage are omitted. */
   dailyTotals(guildId: string, fromDay: string, toDay: string): Promise<Array<{ day: string; costUsd: number }>>;
 }

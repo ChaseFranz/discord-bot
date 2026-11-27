@@ -125,6 +125,13 @@ export class VoiceSessionManager implements MusicHost {
     if (change.oldChannelId === session.channelId || change.newChannelId === session.channelId) this.checkOccupancy(session);
   }
 
+  /** Joins (or moves to) a channel by id. Throws if it isn't a voice channel in that guild. */
+  async joinChannel(guildId: string, channelId: string, options: { listen: boolean }): Promise<VoiceSession> {
+    const channel = await this.deps.resolveChannel(guildId, channelId);
+    if (!channel) throw new MusicError("I couldn't find that voice channel.");
+    return this.join(channel, options);
+  }
+
   /** Leaves the guild's voice channel. Returns false if the bot wasn't in one. */
   async leave(guildId: string): Promise<boolean> {
     const session = this.get(guildId);

@@ -1,6 +1,7 @@
 import type { ConversationMessage, UserScope } from '../../src/storage/ports.js';
-import { openDatabase, type SqliteDatabase } from '../../src/storage/sqlite/database.js';
-import { SqliteConversationRepository } from '../../src/storage/sqlite/SqliteConversationRepository.js';
+import type { Storage } from '../../src/storage/open.js';
+import { fakeClock } from '../helpers.js';
+import { backends } from './backends.js';
 
 const alice: UserScope = { guildId: 'g1', userId: 'alice' };
 const bob: UserScope = { guildId: 'g1', userId: 'bob' };
@@ -8,15 +9,15 @@ const bob: UserScope = { guildId: 'g1', userId: 'bob' };
 const user = (text: string): ConversationMessage => ({ role: 'user', content: [{ type: 'text', text }] });
 const assistant = (text: string): ConversationMessage => ({ role: 'assistant', content: [{ type: 'text', text }] });
 
-describe('SqliteConversationRepository', () => {
-  let db: SqliteDatabase;
-  let repo: SqliteConversationRepository;
+describe.each(backends)('ConversationRepository ($name)', (backend) => {
+  let storage: Storage;
+  let repo: Storage['conversations'];
 
-  beforeEach(() => {
-    db = openDatabase(':memory:');
-    repo = new SqliteConversationRepository(db);
+  beforeEach(async () => {
+    storage = await backend.open(fakeClock());
+    repo = storage.conversations;
   });
-  afterEach(() => db.close());
+  afterEach(() => storage.close());
 
   async function exchange(scope: UserScope, n: number, createdAt = 1_000) {
     await repo.appendTurn({ scope, modality: 'text', messages: [user(`question ${n}`), assistant(`answer ${n}`)], createdAt });
@@ -40,8 +41,20 @@ describe('SqliteConversationRepository', () => {
     const active = await repo.loadActive(alice);
     expect(active.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant', 'user', 'assistant']);
     expect(active[2]!.modality).toBe('voice');
+    expect(active[2]!.createdAt).toBe(2_000);
     expect(active[3]!.content).toEqual([{ type: 'tool_use', id: 't1', name: 'play_music', input: { query: 'jazz' } }]);
     expect(await repo.loadActive(bob)).toHaveLength(2);
+  });
+
+  it('keeps every message when the same person sends two turns at once', async () => {
+    await Promise.all([exchange(alice, 1), exchange(alice, 2), exchange(alice, 3)]);
+    const active = await repo.loadActive(alice);
+    expect(active).toHaveLength(6);
+    // Each turn stays together, user then assistant.
+    for (let i = 0; i < 6; i += 2) {
+      const n = (active[i]!.content[0] as { text: string }).text.replace('question ', '');
+      expect(active[i + 1]!.content).toEqual([{ type: 'text', text: `answer ${n}` }]);
+    }
   });
 
   it('refuses a turn that does not start with the user', async () => {
@@ -75,7 +88,7 @@ describe('SqliteConversationRepository', () => {
     expect(active).toHaveLength(6);
   });
 
-  it('searches the person\'s own history, including archived messages', async () => {
+  it("searches the person's own history, including archived messages", async () => {
     await repo.appendTurn({ scope: alice, modality: 'text', createdAt: 1, messages: [user('recommend a book about Japan'), assistant('Try "The Wind-Up Bird Chronicle".')] });
     for (let n = 1; n <= 4; n++) await exchange(alice, n);
     await exchange(bob, 99);
@@ -84,9 +97,11 @@ describe('SqliteConversationRepository', () => {
     const hits = await repo.search(alice, 'book Japan', 5);
     expect(hits.length).toBeGreaterThan(0);
     expect(hits[0]!.archived).toBe(true);
+    expect(hits[0]!.role).toBe('user');
     expect(hits.map((h) => h.text).join(' ')).toContain('Japan');
     expect(await repo.search(bob, 'Japan', 5)).toEqual([]);
     expect(await repo.search(alice, '"); DROP TABLE x; --', 5)).toEqual([]);
+    expect(await repo.search(alice, '  ¿¡ !! ', 5)).toEqual([]);
   });
 
   it('reset deletes the whole thread', async () => {
@@ -95,17 +110,22 @@ describe('SqliteConversationRepository', () => {
     await repo.reset(alice);
     expect(await repo.loadActive(alice)).toEqual([]);
     expect(await repo.search(alice, 'question', 5)).toEqual([]);
+    // A fresh thread starts over cleanly.
+    await exchange(alice, 2);
+    expect(await repo.loadActive(alice)).toHaveLength(2);
   });
 
-  it('prunes only archived messages older than the cutoff', async () => {
-    await exchange(alice, 1, 100);
-    await exchange(alice, 2, 100);
-    await exchange(alice, 3, 5_000);
-    await repo.trimWindow(alice, { maxMessages: 4, keepMessages: 2 }); // archives turns 1-2
-    expect(await repo.pruneArchivedBefore(1_000)).toBe(4);
-    expect(await repo.loadActive(alice)).toHaveLength(2);
-    // Active messages are never pruned, however old.
-    await exchange(bob, 1, 100);
-    expect(await repo.pruneArchivedBefore(10_000)).toBe(0);
-  });
+  if (backend.name === 'sqlite') {
+    it('prunes only archived messages older than the cutoff', async () => {
+      await exchange(alice, 1, 100);
+      await exchange(alice, 2, 100);
+      await exchange(alice, 3, 5_000);
+      await repo.trimWindow(alice, { maxMessages: 4, keepMessages: 2 }); // archives turns 1-2
+      expect(await repo.pruneArchivedBefore(1_000)).toBe(4);
+      expect(await repo.loadActive(alice)).toHaveLength(2);
+      // Active messages are never pruned, however old.
+      await exchange(bob, 1, 100);
+      expect(await repo.pruneArchivedBefore(10_000)).toBe(0);
+    });
+  }
 });

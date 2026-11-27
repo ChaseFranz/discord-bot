@@ -1,7 +1,7 @@
 import { EmbedBuilder, InteractionContextType, SlashCommandBuilder } from 'discord.js';
 import { BudgetExceededError } from '../../assistant/Assistant.js';
 import { chunkText } from '../../util/text.js';
-import { budgetNote, budgetPausedMessage, formatSources, voiceContextOf } from '../textChat.js';
+import { budgetNote, budgetPausedMessage, formatSources } from '../textChat.js';
 import type { BotCommand } from '../types.js';
 
 const MIN_PROMPT = 3;
@@ -23,41 +23,46 @@ export const chatCommand: BotCommand = {
         .setMinLength(MIN_PROMPT)
         .setMaxLength(MAX_PROMPT),
     ),
-  usage: '/chat prompt: Tell me a funny joke about cats. (For longer messages or images, @mention the assistant instead.)',
+  usage: '/chat prompt: Tell me a funny joke about cats.',
 
-  async execute(interaction, services) {
-    const prompt = interaction.options.getString('prompt', true).trim();
+  async execute(context, services) {
+    const prompt = (context.string('prompt') ?? '').trim();
     if (prompt.length < MIN_PROMPT) {
-      await interaction.editReply({ content: 'Your prompt is too short!' });
+      await context.editReply('Your prompt is too short!');
       return;
     }
     if (prompt.length > MAX_PROMPT) {
-      await interaction.editReply({ content: `Your prompt is too long! Please limit it to ${MAX_PROMPT} characters.` });
+      await context.editReply(`Your prompt is too long! Please limit it to ${MAX_PROMPT} characters.`);
       return;
     }
-    if (services.usage.isPaused(interaction.guildId)) {
-      await interaction.editReply({ content: budgetPausedMessage(services, interaction.guildId) });
+    if (services.usage.isPaused(context.guildId)) {
+      await context.editReply(budgetPausedMessage(services, context.guildId));
       return;
     }
 
-    const member = interaction.member;
-    services.logger.info(`${interaction.user.tag} /chat: "${prompt}"`);
+    services.logger.info(`${context.userTag} /chat: "${prompt}"`);
+    const [call, musicStatus] = await Promise.all([
+      services.calls.voiceChannelOf(context.guildId, context.userId),
+      services.calls.musicStatus(context.guildId),
+    ]);
 
     let reply;
     try {
       reply = await services.assistant.respond({
-        scope: { guildId: interaction.guildId, userId: interaction.user.id },
+        scope: { guildId: context.guildId, userId: context.userId },
         modality: 'text',
-        userDisplayName: member.displayName,
+        userDisplayName: context.displayName,
         text: prompt,
-        channelName: interaction.channel?.name,
-        textChannelId: interaction.channelId,
-        ...voiceContextOf(member),
-        musicStatus: services.music.describe(interaction.guildId),
+        channelName: context.channelName,
+        textChannelId: context.channelId,
+        userVoiceChannelId: call?.id,
+        userVoiceChannelName: call?.name,
+        peoplePresent: call?.people ?? [],
+        musicStatus,
       });
     } catch (error) {
       if (!(error instanceof BudgetExceededError)) throw error;
-      await interaction.editReply({ content: budgetPausedMessage(services, interaction.guildId) });
+      await context.editReply(budgetPausedMessage(services, context.guildId));
       return;
     }
 
@@ -80,12 +85,12 @@ export const chatCommand: BotCommand = {
       return embed;
     });
 
-    const note = budgetNote(services, interaction.guildId);
-    await interaction.editReply({ embeds: [embeds[0]!], ...(note && embeds.length === 1 ? { content: `-# ${note}` } : {}) });
+    const note = budgetNote(services, context.guildId);
+    await context.editReply({ embeds: [embeds[0]!], ...(note && embeds.length === 1 ? { content: `-# ${note}` } : {}) });
     for (const [index, embed] of embeds.slice(1).entries()) {
       const last = index === embeds.length - 2;
-      await interaction.followUp({ embeds: [embed], ...(note && last ? { content: `-# ${note}` } : {}) });
+      await context.followUp({ embeds: [embed], ...(note && last ? { content: `-# ${note}` } : {}) });
     }
-    services.logger.info(`Replied to ${interaction.user.tag} (${reply.model}, ${reply.outcome})`);
+    services.logger.info(`Replied to ${context.userTag} (${reply.model}, ${reply.outcome})`);
   },
 };

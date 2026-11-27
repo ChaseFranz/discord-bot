@@ -3,7 +3,7 @@ import { BudgetExceededError, type AttachedImage } from '../assistant/Assistant.
 import { describeError } from '../logging/logger.js';
 import { chunkText, truncate } from '../util/text.js';
 import { resolveMentions } from './mentions.js';
-import { budgetNote, budgetPausedMessage, formatSources, voiceContextOf } from './textChat.js';
+import { budgetNote, budgetPausedMessage, formatSources } from './textChat.js';
 import type { AppServices } from './types.js';
 
 /** Discord's message length limit for bots. */
@@ -117,6 +117,10 @@ export class MentionChat {
     }
 
     services.logger.info(`${message.author.tag} mentioned ${name} in #${message.channel.name}: "${truncate(text, 200)}"`);
+    const [call, musicStatus] = await Promise.all([
+      services.calls.voiceChannelOf(message.guildId, message.author.id),
+      services.calls.musicStatus(message.guildId),
+    ]);
     const reply = await services.assistant.respond({
       scope: { guildId: message.guildId, userId: message.author.id },
       modality: 'text',
@@ -125,8 +129,10 @@ export class MentionChat {
       images,
       channelName: message.channel.name,
       textChannelId: message.channelId,
-      ...voiceContextOf(member),
-      musicStatus: services.music.describe(message.guildId),
+      userVoiceChannelId: call?.id,
+      userVoiceChannelName: call?.name,
+      peoplePresent: call?.people ?? [],
+      musicStatus,
     });
 
     let body = reply.text.length > 0 ? reply.text : reply.silent ? '*(Stopped.)*' : '*(No reply.)*';

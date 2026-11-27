@@ -24,25 +24,22 @@ export const privacyCommand: BotCommand = {
   usage: '/privacy transcription: Only what I say to the assistant',
   ephemeral: true,
 
-  async execute(interaction, services) {
-    const { guildId } = interaction;
-    const userId = interaction.user.id;
-    const choice = interaction.options.getString('transcription') as PrivacyLevel | null;
+  async execute(context, services) {
+    const { guildId, userId } = context;
+    const choice = context.string('transcription') as PrivacyLevel | null;
     if (choice === null) {
       const current = await services.privacy.level(guildId, userId);
-      await interaction.editReply({
-        content: `Your current choice: **${CHOICES[current]}**.\n${explain(services, current)}\nChange it with \`/privacy transcription:\`.`,
-      });
+      await context.editReply(`Your current choice: **${CHOICES[current]}**.\n${explain(services, current)}\nChange it with \`/privacy transcription:\`.`);
       return;
     }
     if (!PRIVACY_LEVELS.includes(choice)) {
-      await interaction.editReply({ content: 'Unknown choice.' });
+      await context.editReply('Unknown choice.');
       return;
     }
     // Takes effect at once, even mid-sentence (see the privacy listener in app.ts).
     await services.privacy.set(guildId, userId, choice);
-    services.logger.info(`${interaction.user.tag} set transcription privacy to ${choice}.`);
-    await interaction.editReply({ content: `Saved: **${CHOICES[choice]}**.\n${explain(services, choice)}` });
+    services.logger.info(`${context.userTag} set transcription privacy to ${choice}.`);
+    await context.editReply(`Saved: **${CHOICES[choice]}**.\n${explain(services, choice)}`);
   },
 };
 

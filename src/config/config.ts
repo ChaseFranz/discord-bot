@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { StorageConfig } from '../storage/open.js';
 
 /** Thinking-depth levels accepted by `output_config.effort` on current Claude models. */
 export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
@@ -52,8 +53,12 @@ const envSchema = z.object({
   TRANSCRIBE_USD_PER_MINUTE: z.coerce.number().min(0).optional(),
   POLLY_USD_PER_MILLION_CHARACTERS: z.coerce.number().min(0).optional(),
 
+  STORAGE: z.enum(['sqlite', 'dynamodb']).default('sqlite'),
   DATABASE_PATH: z.string().default('./data/bot.db'),
   MEMORY_DATABASE_PATH: z.string().default('./data/memories.db'),
+  DYNAMODB_TABLE: z.string().default('nimbus'),
+  DYNAMODB_MEMORY_TABLE: z.string().default('nimbus-memories'),
+  DYNAMODB_ENDPOINT: z.url().optional(),
   MEMORY_RETENTION_DAYS: z.coerce.number().int().min(0).default(30),
 
   LOG_LEVEL: z.enum(['error', 'warn', 'info', 'debug']).default('info'),
@@ -112,9 +117,8 @@ export interface AppConfig {
     pollyUsdPerMillionCharacters: number | undefined;
   };
   storage: {
-    databasePath: string;
-    /** Long-term notes about people, kept in their own database. */
-    memoryDatabasePath: string;
+    /** SQLite files on this computer, or DynamoDB tables (long-term notes in their own in both). */
+    backend: StorageConfig;
     retentionDays: number;
   };
   logLevel: 'error' | 'warn' | 'info' | 'debug';
@@ -187,7 +191,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       transcribeUsdPerMinute: e.TRANSCRIBE_USD_PER_MINUTE,
       pollyUsdPerMillionCharacters: e.POLLY_USD_PER_MILLION_CHARACTERS,
     },
-    storage: { databasePath: e.DATABASE_PATH, memoryDatabasePath: e.MEMORY_DATABASE_PATH, retentionDays: e.MEMORY_RETENTION_DAYS },
+    storage: {
+      backend:
+        e.STORAGE === 'dynamodb'
+          ? {
+              kind: 'dynamodb',
+              region: e.AWS_REGION,
+              table: e.DYNAMODB_TABLE,
+              memoryTable: e.DYNAMODB_MEMORY_TABLE,
+              ...(e.DYNAMODB_ENDPOINT ? { endpoint: e.DYNAMODB_ENDPOINT } : {}),
+            }
+          : { kind: 'sqlite', databasePath: e.DATABASE_PATH, memoryDatabasePath: e.MEMORY_DATABASE_PATH },
+      retentionDays: e.MEMORY_RETENTION_DAYS,
+    },
     logLevel: e.LOG_LEVEL,
   };
 }

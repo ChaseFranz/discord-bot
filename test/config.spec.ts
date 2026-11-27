@@ -30,7 +30,10 @@ describe('loadConfig', () => {
     expect(config.assistant.name).toBe('Nimbus');
     expect(config.assistant.wakeWord).toBe('nimbus');
     expect(config.assistant.wakeSound).toBe(true);
-    expect(config.storage).toEqual({ databasePath: './data/bot.db', memoryDatabasePath: './data/memories.db', retentionDays: 30 });
+    expect(config.storage).toEqual({
+      backend: { kind: 'sqlite', databasePath: './data/bot.db', memoryDatabasePath: './data/memories.db' },
+      retentionDays: 30,
+    });
     expect(config.aws).toEqual({
       region: 'us-east-1',
       transcribeLanguageCode: 'en-US',
@@ -87,5 +90,16 @@ describe('loadConfig', () => {
     expect(custom.usage).toMatchObject({ dailyBudgetUsd: 0, transcribeUsdPerMinute: 0.024 });
     expect(() => loadConfig({ ...required, DAILY_BUDGET_USD: '-1' })).toThrow(ConfigError);
     expect(() => loadConfig({ ...required, FOLLOW_UP_SECONDS: 'soon' })).toThrow(/FOLLOW_UP_SECONDS/);
+  });
+
+  it('switches storage to DynamoDB tables', () => {
+    expect(loadConfig({ ...required, STORAGE: 'dynamodb' }).storage.backend).toEqual({
+      kind: 'dynamodb', region: 'us-east-1', table: 'nimbus', memoryTable: 'nimbus-memories',
+    });
+    expect(
+      loadConfig({ ...required, STORAGE: 'dynamodb', DYNAMODB_TABLE: 'dev', DYNAMODB_ENDPOINT: 'http://localhost:8000' }).storage.backend,
+    ).toMatchObject({ table: 'dev', endpoint: 'http://localhost:8000' });
+    expect(() => loadConfig({ ...required, STORAGE: 'postgres' })).toThrow(/STORAGE/);
+    expect(() => loadConfig({ ...required, DYNAMODB_ENDPOINT: 'not a url' })).toThrow(/DYNAMODB_ENDPOINT/);
   });
 });

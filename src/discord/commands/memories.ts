@@ -30,33 +30,32 @@ export const memoriesCommand: BotCommand = {
   usage: '/memories - Shows what the assistant remembers about you, with options to forget it.',
   ephemeral: true,
 
-  async execute(interaction, services) {
-    await interaction.editReply(await memoriesView(services, interaction.guildId, interaction.user.id));
+  async execute(context, services) {
+    await context.editReply(await memoriesView(services, context.guildId, context.userId));
   },
 };
 
 /** The forget menu and buttons on the /memories message. */
 export const memoriesComponents: ComponentHandler = {
   prefix: PREFIX,
-  async execute(interaction, services) {
-    const { guildId } = interaction;
-    const userId = interaction.user.id;
+  async execute(context, services) {
+    const { guildId, userId } = context;
     const name = services.config.assistant.name;
-    const action = interaction.customId.slice(PREFIX.length + 1);
+    const action = context.customId.slice(PREFIX.length + 1);
 
-    if (action === 'forget' && interaction.isStringSelectMenu()) {
-      const id = Number(interaction.values[0]);
+    if (action === 'forget' && context.kind === 'select') {
+      const id = Number(context.values[0]);
       const memory = Number.isInteger(id) ? await services.memories.get(guildId, id) : undefined;
       let notice = 'That note was already gone.';
       // The menu only lists your own notes, but check again: only notes about you can be removed here.
       if (memory && memory.subjectId === userId) {
         await services.memories.delete(guildId, memory.id);
-        services.logger.info(`${interaction.user.tag} deleted memory #${memory.id} about themselves.`);
+        services.logger.info(`${context.userTag} deleted memory #${memory.id} about themselves.`);
         notice = `Forgot: "${truncate(memory.text, 80)}"`;
       }
-      await interaction.update(await memoriesView(services, guildId, userId, notice));
+      await context.update(await memoriesView(services, guildId, userId, notice));
     } else if (action === 'forget-all') {
-      await interaction.update({
+      await context.update({
         content: `Forget everything ${name} remembers about you? This can't be undone.`,
         embeds: [],
         components: [
@@ -68,14 +67,14 @@ export const memoriesComponents: ComponentHandler = {
       });
     } else if (action === 'forget-all-confirm') {
       const count = await services.memories.deleteAllAbout(guildId, userId);
-      services.logger.info(`${interaction.user.tag} deleted all ${count} memories about themselves.`);
-      await interaction.update({
+      services.logger.info(`${context.userTag} deleted all ${count} memories about themselves.`);
+      await context.update({
         content: `Done. ${name} forgot ${count} note${count === 1 ? '' : 's'} about you.`,
         embeds: [],
         components: [],
       });
     } else if (action === 'cancel') {
-      await interaction.update(await memoriesView(services, guildId, userId));
+      await context.update(await memoriesView(services, guildId, userId));
     }
   },
 };

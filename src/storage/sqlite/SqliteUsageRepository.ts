@@ -23,6 +23,13 @@ export class SqliteUsageRepository implements UsageRepository {
     return rows.map((row) => ({ metric: row.metric, quantity: row.quantity, costUsd: row.cost_usd }));
   }
 
+  async dayTotal(guildId: string, day: string): Promise<number> {
+    const row = this.db
+      .prepare('SELECT COALESCE(SUM(cost_usd), 0) AS total FROM usage_daily WHERE guild_id = ? AND day = ?')
+      .get(guildId, day) as { total: number };
+    return row.total;
+  }
+
   async dailyTotals(guildId: string, fromDay: string, toDay: string): Promise<Array<{ day: string; costUsd: number }>> {
     const rows = this.db
       .prepare(

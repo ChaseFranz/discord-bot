@@ -24,6 +24,7 @@ import { createClaudeClient, describeClaudeAccess, verifyClaudeAccess } from '..
 import { connectMemoryTools } from '../memory/inProcess.js';
 import { loadConfig } from '../config/config.js';
 import { CallRecapper } from '../recaps/CallRecapper.js';
+import { schedulerAlarm } from '../reminders/alarm.js';
 import { createReminderToolProvider } from '../reminders/reminderTools.js';
 import { createLogger, describeError } from '../logging/logger.js';
 import { MusicService } from '../music/MusicService.js';
@@ -109,7 +110,7 @@ async function smokeClaude(): Promise<void> {
     memory.provider,
     createMusicToolProvider(new MusicService(noMusicHost, noTracks, logger)),
     createVoiceToolProvider({ get: () => undefined }),
-    createReminderToolProvider({ reminders, changed: () => undefined, clock: Date.now, timeZone: config.assistant.timeZone }),
+    createReminderToolProvider({ reminders, alarm: schedulerAlarm(undefined), clock: Date.now, timeZone: config.assistant.timeZone }),
   ]);
   // Log each tool call so you can see the memory MCP tools being used.
   const loggingRegistry = Object.assign(Object.create(registry) as ToolRegistry, {

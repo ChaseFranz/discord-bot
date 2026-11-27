@@ -215,6 +215,20 @@ export class UsageService implements UsageMeter, BudgetGate {
     return this.writes;
   }
 
+  /**
+   * Picks up spending recorded by other processes (on AWS, Lambda and the voice task both spend),
+   * reporting the warning or the cap if that crosses one.
+   */
+  async refresh(guildId: string): Promise<void> {
+    await this.flush();
+    const totals = this.totals(guildId);
+    const before = this.stateFor(totals.spentUsd);
+    const stored = await this.deps.repository.dayTotal(guildId, totals.day);
+    // Never below what this process knows it spent (in case a write failed).
+    totals.spentUsd = Math.max(totals.spentUsd, stored);
+    this.reportCrossing(guildId, totals, before);
+  }
+
   private record(guildId: string, lines: UsageLine[]): void {
     if (lines.length === 0) return;
     const totals = this.totals(guildId);
@@ -226,7 +240,10 @@ export class UsageService implements UsageMeter, BudgetGate {
       .catch((error: unknown) => {
         this.deps.logger.warn(`Could not save usage: ${describeError(error)}`);
       });
+    this.reportCrossing(guildId, totals, before);
+  }
 
+  private reportCrossing(guildId: string, totals: DayTotals, before: BudgetState): void {
     const after = this.stateFor(totals.spentUsd);
     if (after === before || after === 'ok' || totals.reported.has(after)) return;
     // Report each level once per day. Jumping straight to the cap reports only the cap.

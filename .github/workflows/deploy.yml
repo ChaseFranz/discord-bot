@@ -1,0 +1,67 @@
+name: Deploy
+
+# Merging to main deploys Nimbus to AWS, once someone approves it: the "production" environment
+# has a required reviewer. GitHub signs in to AWS with OIDC; no AWS keys are stored here.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    name: Deploy to AWS
+    environment: production
+    # The voice task image is ARM (Graviton); building it on an ARM runner avoids emulation.
+    runs-on: ubuntu-24.04-arm
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      DISCORD_CLIENT_ID: ${{ vars.DISCORD_CLIENT_ID }}
+      DISCORD_GUILD_ID: ${{ vars.DISCORD_GUILD_ID }}
+      DISCORD_PUBLIC_KEY: ${{ vars.DISCORD_PUBLIC_KEY }}
+      TIMEZONE: ${{ vars.TIMEZONE }}
+      CLAUDE_PROVIDER: ${{ vars.CLAUDE_PROVIDER || 'aws' }}
+      ANTHROPIC_AWS_WORKSPACE_ID: ${{ vars.ANTHROPIC_AWS_WORKSPACE_ID }}
+      ALERT_EMAIL: ${{ vars.ALERT_EMAIL }}
+      DAILY_BUDGET_USD: ${{ vars.DAILY_BUDGET_USD }}
+      MONTHLY_BUDGET_USD: ${{ vars.MONTHLY_BUDGET_USD }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24.15'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            infra/package-lock.json
+      - run: npm ci
+      # Built for the command registration step below.
+      - run: npx tsc -p tsconfig.json
+      - run: npm ci
+        working-directory: infra
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Deploy the NimbusCloud stack
+        working-directory: infra
+        run: |
+          set -euo pipefail
+          npx cdk deploy NimbusCloud --require-approval never \
+            -c "clientId=$DISCORD_CLIENT_ID" -c "guildId=$DISCORD_GUILD_ID" -c "publicKey=$DISCORD_PUBLIC_KEY" \
+            -c "timeZone=$TIMEZONE" -c "claudeProvider=$CLAUDE_PROVIDER" -c "anthropicWorkspaceId=$ANTHROPIC_AWS_WORKSPACE_ID" \
+            -c "alertEmail=$ALERT_EMAIL" -c "dailyBudgetUsd=$DAILY_BUDGET_USD" -c "monthlyBudgetUsd=$MONTHLY_BUDGET_USD"
+      - name: Register slash commands
+        # The script reads the token from Secrets Manager itself; it never appears in the log.
+        run: npm run register-commands
+        env:
+          DISCORD_BOT_TOKEN_SECRET: nimbus/discord-bot-token
+          CLIENT_ID: ${{ vars.DISCORD_CLIENT_ID }}
+          GUILD_ID: ${{ vars.DISCORD_GUILD_ID }}

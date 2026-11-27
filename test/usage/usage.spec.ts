@@ -133,4 +133,17 @@ describe('UsageService', () => {
     expect(usage.status('g')).toMatchObject({ budgetUsd: null, state: 'ok' });
     expect(usage.isPaused('g')).toBe(false);
   });
+
+  it('picks up spending recorded by another process, and reports the cap once', async () => {
+    const voiceTask = make(1);
+    const lambda = make(1);
+    lambda.recordClaude('g', 'claude-opus-5-5', counts({ outputTokens: 60_000 })); // $1.20, recorded elsewhere
+    await lambda.flush();
+    thresholds = [];
+    expect(voiceTask.isPaused('g')).toBe(false);
+    await voiceTask.refresh('g');
+    expect(voiceTask.isPaused('g')).toBe(true);
+    await voiceTask.refresh('g');
+    expect(thresholds).toEqual(['g:paused']);
+  });
 });

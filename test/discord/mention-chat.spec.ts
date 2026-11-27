@@ -34,7 +34,7 @@ describe('MentionChat', () => {
         isPaused: () => paused,
         status: () => ({ day: '2026-11-26', spentUsd: paused ? 5 : 1, budgetUsd: 5, state: paused ? 'paused' : 'ok', resetsAt: 1_795_700_000_000 }),
       },
-      music: { describe: () => 'nothing playing' },
+      calls: { voiceChannelOf: async () => undefined, musicStatus: async () => 'nothing playing' },
     }) as unknown as AppServices;
 
   function message(content: string, overrides: Record<string, unknown> = {}): Message {

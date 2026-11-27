@@ -177,7 +177,7 @@ Ask in any way: "Nimbus, set a timer for 10 minutes", "remind me at 9 to start t
 
 When one is due, Nimbus says it out loud if you're in a call with it. For "remind us", it says it to whoever is in the call. Otherwise it posts a mention in the channel where you set it; for one set by voice, that's the voice channel's chat. If it can't post there, it sends you a direct message. Each person can have 25 active reminders, and only the person who set one can cancel it.
 
-Reminders are stored in the database, so they survive restarts. **Running on your PC:** a reminder due while the PC is off or asleep goes out as soon as the bot is running again, marked as late. A repeating one then skips ahead to its next future time instead of firing for every one it missed. **Running on AWS:** the bot runs around the clock, so reminders are always on time. The same scheduler works there unchanged; only the storage moves (SQLite to DynamoDB, behind the same `ReminderRepository` interface). A separate scheduling service such as EventBridge isn't needed while the bot is always on.
+Reminders are stored in the database, so they survive restarts. **Running on your PC:** a scheduler inside the bot delivers them. A reminder due while the PC is off or asleep goes out as soon as the bot is running again, marked as late. A repeating one then skips ahead to its next future time instead of firing for every one it missed. **Running on AWS:** nothing runs between uses, so each reminder wakes a Lambda function just before it's due (through EventBridge Scheduler, or directly when it's minutes away). The Lambda waits for the exact second and then delivers it, so reminders are on time whether or not anyone is in a call.
 
 ## Costs
 
@@ -192,6 +192,70 @@ You pay each provider directly. Rough guide:
 Nimbus meters every Claude request, web search, second of transcription and character of speech, prices them at the list prices above, and keeps a running total per day (in your `TIMEZONE`). `/usage` shows the breakdown. When a day's total reaches `DAILY_BUDGET_USD` (default $5), Nimbus says so once in the call, then stops listening and answering until midnight. Typed requests get a short "taking a break" reply. Music, reminders and the other slash commands keep working. Text replies get a note once 80% is used. Set `DAILY_BUDGET_USD=0` to track spending without a cap.
 
 The totals are estimates. A request in progress when the cap is reached finishes first. Your Anthropic or AWS bill is authoritative. If your region's Transcribe or Polly prices differ, set `TRANSCRIBE_USD_PER_MINUTE` and `POLLY_USD_PER_MILLION_CHARACTERS`.
+
+## Running on AWS
+
+Nimbus can also run in your AWS account, where it uses nothing between uses:
+
+```text
+slash command ─► Lambda "edge" (function URL) ─► answers "thinking…" within Discord's 3 seconds
+                       │ hands it on
+                       ▼
+               Lambda "worker" ─► text commands are answered here (Claude, DynamoDB)
+                       │ voice commands
+                       ▼
+     SQS queue ─► Fargate voice task: started by /join or /play, finishes ~2 minutes after the call
+reminder due ─► EventBridge Scheduler ─► Lambda "reminders" ─► said in the call, or posted as a mention
+```
+
+Compared with running on your PC:
+
+- **`/join` and `/play`** take about 30–60 seconds the first time, while the voice task starts. Nimbus replies "On my way…" right away.
+- **@mention chat** is off: it needs a connection that's always open. `/chat` works as usual.
+- **Data** is kept in two on-demand DynamoDB tables. Old transcripts and conversation turns expire by themselves (DynamoDB's TTL). Nothing is copied from your PC's SQLite files.
+- **Reminders** arrive on time even when nobody is in a call.
+
+It costs roughly **$5 a month** at about 3 hours of calls a day, on top of Claude, Transcribe and Polly usage. The voice task is about $0.025 an hour, plus a public IP while it runs. Lambda, SQS, EventBridge and DynamoDB stay within or near their free tiers at this size, and the two secrets are $0.80 a month. With `ALERT_EMAIL` set, an AWS Budgets alert emails you at 80% of `MONTHLY_BUDGET_USD` (default $25).
+
+### One-time setup
+
+1. Deploy the stack you only deploy by hand: GitHub's access to AWS and the two secrets. Then copy the secrets from `.env`:
+
+   ```bash
+   cd infra && npx cdk deploy NimbusDeploy --profile admin && cd ..
+   AWS_PROFILE=admin npm run aws:secrets   # DISCORD_BOT_TOKEN (and ANTHROPIC_API_KEY) from .env, never printed
+   ```
+
+   Note the `DeployRoleArn` it prints. If your account already has a GitHub OIDC provider, add `-c githubOidcProviderArn=<its ARN>`.
+2. In GitHub, open **Settings → Environments**, create `production`, add yourself as a **required reviewer**, and add these environment variables:
+
+   | Variable | Value |
+   | --- | --- |
+   | `AWS_DEPLOY_ROLE_ARN` | The `DeployRoleArn` from step 1 |
+   | `AWS_REGION` | `us-east-1` |
+   | `DISCORD_CLIENT_ID` | The Application ID |
+   | `DISCORD_GUILD_ID` | Your server ID |
+   | `DISCORD_PUBLIC_KEY` | Developer Portal → General Information → Public Key |
+   | `TIMEZONE` | Your time zone, e.g. `America/Chicago`. AWS runs in UTC otherwise, and reminders would be off. |
+   | `CLAUDE_PROVIDER` | `anthropic` for now (uses the API key from step 1). Change it to `aws` and add `ANTHROPIC_AWS_WORKSPACE_ID` once Claude Platform on AWS is set up. |
+   | `ALERT_EMAIL` | Optional: gets Lambda error alerts and the spending alert |
+   | `DAILY_BUDGET_USD`, `MONTHLY_BUDGET_USD` | Optional: the bot's daily cap (default $5) and the AWS Budgets alert (default $25) |
+
+3. Merge to `main` (or run the **Deploy** workflow by hand) and approve it. The first deploy takes about 10 minutes, mostly building the voice task image.
+4. Stop the bot on your PC, then send slash commands to AWS:
+
+   ```bash
+   AWS_PROFILE=admin npm run aws:on
+   ```
+
+### Switching between AWS and your PC
+
+Discord sends slash commands to one place only. `npm run aws:off` sends them back to a bot on your PC (start it with `npm start`), and `npm run aws:on` sends them to AWS again. Don't run both at once: either copy can join a call, so two could end up answering in the same one. Your PC keeps its own SQLite data, so what's said while testing locally doesn't reach AWS's memory.
+
+### CI and deploys
+
+- **Every push and pull request** (`.github/workflows/ci.yml`): type-check, tests against SQLite and DynamoDB Local, build, and the CDK tests and synth.
+- **Merging to `main`** (`.github/workflows/deploy.yml`): deploys the `NimbusCloud` stack once you approve it, then registers the slash commands. GitHub signs in to AWS with OIDC, using a role that only this repository's `production` environment can assume, so no AWS keys are stored in GitHub.
 
 ## Using the memory from other MCP clients
 
@@ -216,22 +280,28 @@ In this mode `guild_id` and `user_id` are ordinary tool arguments.
 
 ## Architecture
 
-Everything external sits behind a small interface (a "port"), and the one place that picks implementations is `src/app.ts`:
+Everything external sits behind a small interface (a "port"). The programs that pick implementations are `src/app.ts` (the PC) and `src/aws/` (AWS), sharing their wiring through `src/runtime/`:
 
-| Port | Today (runs on your PC) | Later on AWS |
+| Port | On your PC | On AWS |
 | --- | --- | --- |
-| `ConversationRepository`, `TranscriptRepository`, `SettingsRepository`, `MemoryRepository`, `ReminderRepository`, `UsageRepository` (`src/storage/ports.ts`) | SQLite (`src/storage/sqlite/`), with notes in their own `memories.db` | DynamoDB / Aurora; OpenSearch or pgvector for semantic search |
+| `ConversationRepository`, `TranscriptRepository`, `SettingsRepository`, `MemoryRepository`, `ReminderRepository`, `UsageRepository` (`src/storage/ports.ts`) | SQLite (`src/storage/sqlite/`), with notes in their own `memories.db` | DynamoDB (`src/storage/dynamodb/`), with notes in their own table; keyword search ranked in code (`src/storage/search/`) |
+| Slash commands (`CommandContext` in `src/discord/context.ts`) | The live Gateway connection (discord.js) | HTTPS interactions to Lambda, answered through the REST API |
+| `ReminderAlarm` (`src/reminders/alarm.ts`) | The in-process scheduler | EventBridge Scheduler waking a Lambda |
+| Calls (`src/calls/voiceTask.ts`) | Handled in the one process | An on-demand Fargate task, given orders through SQS, with a status record in DynamoDB |
 | `SpeechToText` (`src/speech/ports.ts`) | AWS Transcribe streaming | same |
 | `TextToSpeech` | AWS Polly | same |
 | `TrackSource` (`src/music/types.ts`) | YouTube (`@distube/ytdl-core`) | same |
-| Claude access (`src/claude/client.ts`) | Claude Platform on AWS (`AnthropicAws`), or the Claude API directly | same; use an IAM role instead of access keys |
-| Memory tools | MCP server in-process (`src/memory/inProcess.ts`) | same server over Streamable HTTP as its own service |
-| `ToolProvider` (`src/assistant/tools/types.ts`) | native tools + MCP adapter | add more MCP servers without touching the assistant |
+| Claude access (`src/claude/client.ts`) | Claude Platform on AWS (`AnthropicAws`), or the Claude API directly | same, through IAM roles instead of access keys |
+| Memory tools | MCP server in-process (`src/memory/inProcess.ts`) | same |
+| `ToolProvider` (`src/assistant/tools/types.ts`) | native tools + MCP adapter | same |
 
 ```text
 src/
-  app.ts                 composition root: builds and wires everything
+  app.ts                 the bot on a PC: builds and wires everything in one process
   index.ts               entry point: config, logging, start/stop
+  runtime/               wiring shared by every program: core services and the call stack
+  aws/                   the AWS programs: edge, worker and reminder Lambdas, and the voice task
+  calls/                 the on-demand voice task: status record, orders queue, control, main loop
   config/                environment validation (zod)
   claude/                Claude client for the configured provider + startup check
   assistant/             Claude agent loop, prompts, history sanitising, styles
@@ -241,23 +311,29 @@ src/
   recaps/                end-of-call recaps
   usage/                 price list, usage meter and daily budget
   privacy/               per-person transcription choice
-  storage/               repository ports + SQLite implementations
+  storage/               repository ports; SQLite and DynamoDB implementations; in-code search
   speech/                STT/TTS ports + AWS adapters
   voice/                 voice sessions, audio capture, speech queue, wake word, follow-ups and stop
   music/                 queue service + YouTube source
-  discord/               client, interaction router, slash commands, @mention chat
-  scripts/smoke.ts       live smoke test
-infra/                   AWS CDK app: the Nimbus CloudFormation stack (bot IAM user, policy, key)
+  discord/               client, command dispatch (Gateway and HTTPS), slash commands, @mention chat
+  scripts/               smoke test, command registration, switching between AWS and a PC
+infra/                   AWS CDK app: Nimbus (PC identity), NimbusDeploy (GitHub access, secrets),
+                         NimbusCloud (the bot on AWS)
+.github/workflows/       CI and deploys
+Dockerfile               the voice task's image
 test/                    unit and integration tests (jest)
 ```
 
 ## Development
 
 ```bash
-npm test           # jest (ESM)
-npm run typecheck  # strict TypeScript over src and tests
-npm run dev        # tsc --watch
+npm test               # jest (ESM); storage tests run against SQLite
+npm run test:dynamodb  # the same, plus DynamoDB, against a DynamoDB Local on port 8000
+npm run typecheck      # strict TypeScript over src and tests
+npm run dev            # tsc --watch
 ```
+
+For `test:dynamodb`, start DynamoDB Local first, for example `docker run -p 8000:8000 amazon/dynamodb-local`. CI always runs it.
 
 ## License
 

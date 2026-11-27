@@ -1,15 +1,16 @@
-import { openMemoryDatabase, type SqliteDatabase } from '../../src/storage/sqlite/database.js';
-import { SqliteMemoryRepository } from '../../src/storage/sqlite/SqliteMemoryRepository.js';
+import type { Storage } from '../../src/storage/open.js';
+import { fakeClock } from '../helpers.js';
+import { backends } from './backends.js';
 
-describe('SqliteMemoryRepository', () => {
-  let db: SqliteDatabase;
-  let repo: SqliteMemoryRepository;
+describe.each(backends)('MemoryRepository ($name)', (backend) => {
+  let storage: Storage;
+  let repo: Storage['memories'];
 
-  beforeEach(() => {
-    db = openMemoryDatabase(':memory:');
-    repo = new SqliteMemoryRepository(db);
+  beforeEach(async () => {
+    storage = await backend.open(fakeClock());
+    repo = storage.memories;
   });
-  afterEach(() => db.close());
+  afterEach(() => storage.close());
 
   const add = (subjectId: string | null, text: string, createdAt = 1_000, guildId = 'g') =>
     repo.add({ guildId, subjectId, subjectName: subjectId ?? 'the server', text, sourceUserId: 'src', sourceName: 'Src', createdAt });
@@ -37,6 +38,14 @@ describe('SqliteMemoryRepository', () => {
     expect(await repo.deleteAllAbout('g', 'a')).toBe(2);
     expect((await repo.listAbout('g', ['b'], 5)).map((n) => n.text)).toEqual(['Keep me']);
     expect(await repo.delete('g', note.id)).toBe(false);
+  });
+
+  it('gets notes by id within the guild only', async () => {
+    const note = await add('a', 'Likes tea');
+    expect(await repo.get('g', note.id)).toMatchObject({ id: note.id, subjectId: 'a', text: 'Likes tea', createdAt: 1_000, updatedAt: 1_000 });
+    expect(await repo.get('other-guild', note.id)).toBeUndefined();
+    const server = await add(null, 'Movie night is Fridays');
+    expect((await repo.get('g', server.id))?.subjectId).toBeNull();
   });
 
   it('full-text searches notes with stemming', async () => {

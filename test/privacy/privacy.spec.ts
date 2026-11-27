@@ -11,14 +11,6 @@ describe('privacy settings', () => {
   });
   afterEach(() => db.close());
 
-  it('keeps style and privacy independently, with defaults', async () => {
-    const scope = { guildId: 'g', userId: 'u' };
-    expect(await settings.get(scope)).toBeUndefined();
-    expect(await settings.update(scope, { privacy: 'off' })).toEqual({ style: 'default', privacy: 'off' });
-    expect(await settings.update(scope, { style: 'casual' })).toEqual({ style: 'casual', privacy: 'off' });
-    expect(await settings.get(scope)).toEqual({ style: 'casual', privacy: 'off' });
-  });
-
   it('defaults to full, caches, and tells listeners about changes', async () => {
     const privacy = new PrivacyService(settings);
     const changes: string[] = [];

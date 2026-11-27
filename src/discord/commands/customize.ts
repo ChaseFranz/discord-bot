@@ -16,14 +16,14 @@ export const customizeCommand: BotCommand = {
     ),
   usage: '/customize style: Casual',
 
-  async execute(interaction, services) {
-    const style = interaction.options.getString('style', true);
+  async execute(context, services) {
+    const style = context.string('style') ?? '';
     if (!isStyleId(style)) {
-      await interaction.editReply({ content: 'Unknown style.' });
+      await context.editReply('Unknown style.');
       return;
     }
-    await services.settings.update({ guildId: interaction.guildId, userId: interaction.user.id }, { style });
-    services.logger.info(`${interaction.user.tag} set style=${style}`);
-    await interaction.editReply({ content: `Settings updated: Style = ${STYLES[style].label}` });
+    await services.settings.update({ guildId: context.guildId, userId: context.userId }, { style });
+    services.logger.info(`${context.userTag} set style=${style}`);
+    await context.editReply(`Settings updated: Style = ${STYLES[style].label}`);
   },
 };

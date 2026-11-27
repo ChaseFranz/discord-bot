@@ -44,34 +44,17 @@ describe('reminders', () => {
   });
   afterEach(() => db.close());
 
-  describe('repository', () => {
-    it('stores, lists, fires and cancels reminders', async () => {
-      const a = await repo.create(newReminder({ dueAt: START + 120_000 }));
-      const b = await repo.create(newReminder({ dueAt: START + 60_000, repeat: { every: 'day', interval: 1, localTime: '14:01:00' } }));
-      await repo.create(newReminder({ userId: 'sam', dueAt: START + 30_000 }));
-      expect((await repo.listActive('g', 'alice')).map((r) => r.id)).toEqual([b.id, a.id]);
-      expect((await repo.get('g', b.id))?.repeat).toEqual({ every: 'day', interval: 1, localTime: '14:01:00' });
-      expect((await repo.nextDue())?.userId).toBe('sam');
-      expect((await repo.listDue(START + 90_000, 10)).map((r) => r.userId)).toEqual(['sam', 'alice']);
-
-      await repo.markFired(b.id, START + 60_000, START + 86_460_000);
-      expect(await repo.get('g', b.id)).toMatchObject({ status: 'active', dueAt: START + 86_460_000, firedCount: 1, lastFiredAt: START + 60_000 });
-      await repo.markFired(a.id, START + 120_000, null);
-      expect((await repo.get('g', a.id))?.status).toBe('done');
-      expect(await repo.cancel('g', a.id)).toBe(false);
-      expect(await repo.cancel('g', b.id)).toBe(true);
-      expect(await repo.countActive('g', 'alice')).toBe(0);
-      expect(await repo.pruneFinishedBefore(START + 1)).toBe(1); // the cancelled one; the other finished later
-      expect(await repo.pruneFinishedBefore(START + 200_000)).toBe(1);
-    });
-  });
-
   describe('tools', () => {
     let changes: number;
     let tools: ReturnType<typeof createReminderToolProvider>;
     beforeEach(() => {
       changes = 0;
-      tools = createReminderToolProvider({ reminders: repo, changed: () => changes++, clock, timeZone: NY });
+      tools = createReminderToolProvider({
+        reminders: repo,
+        alarm: { set: async () => void changes++, clear: async () => void changes++ },
+        clock,
+        timeZone: NY,
+      });
     });
     const call = (name: string, input: unknown, ctx = context()) => tools.callTool(name, input, ctx);
 

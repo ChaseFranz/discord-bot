@@ -1,23 +1,6 @@
-import type { GuildMember } from 'discord.js';
 import type { Source } from '../assistant/history.js';
 import { truncate } from '../util/text.js';
 import type { AppServices } from './types.js';
-
-/** The voice-channel context of someone typing to the assistant. */
-export function voiceContextOf(member: GuildMember): {
-  userVoiceChannelId: string | undefined;
-  userVoiceChannelName: string | undefined;
-  peoplePresent: Array<{ id: string; name: string }>;
-} {
-  const channel = member.voice.channel;
-  return {
-    userVoiceChannelId: channel?.id,
-    userVoiceChannelName: channel?.name,
-    peoplePresent: channel
-      ? [...channel.members.values()].filter((m) => !m.user.bot).map((m) => ({ id: m.id, name: m.displayName }))
-      : [],
-  };
-}
 
 /** A markdown list of web sources, for the end of a text reply. */
 export function formatSources(sources: readonly Source[]): string {

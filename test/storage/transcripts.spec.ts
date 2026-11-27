@@ -1,6 +1,7 @@
-import { openDatabase, type SqliteDatabase } from '../../src/storage/sqlite/database.js';
+import type { Storage } from '../../src/storage/open.js';
 import { toFtsQuery } from '../../src/storage/sqlite/fts.js';
-import { SqliteTranscriptRepository } from '../../src/storage/sqlite/SqliteTranscriptRepository.js';
+import { fakeClock } from '../helpers.js';
+import { backends } from './backends.js';
 
 describe('toFtsQuery', () => {
   it('quotes and ORs terms so model-written queries cannot break FTS syntax', () => {
@@ -10,15 +11,15 @@ describe('toFtsQuery', () => {
   });
 });
 
-describe('SqliteTranscriptRepository', () => {
-  let db: SqliteDatabase;
-  let repo: SqliteTranscriptRepository;
+describe.each(backends)('TranscriptRepository ($name)', (backend) => {
+  let storage: Storage;
+  let repo: Storage['transcripts'];
 
-  beforeEach(() => {
-    db = openDatabase(':memory:');
-    repo = new SqliteTranscriptRepository(db);
+  beforeEach(async () => {
+    storage = await backend.open(fakeClock());
+    repo = storage.transcripts;
   });
-  afterEach(() => db.close());
+  afterEach(() => storage.close());
 
   async function seed() {
     const s1 = await repo.startSession({ guildId: 'g1', channelId: 'vc1', channelName: 'General', startedAt: 1_000 });
@@ -102,13 +103,30 @@ describe('SqliteTranscriptRepository', () => {
     expect(session!.endedAt).toBe(5_500);
   });
 
-  it('prunes old segments and empty ended sessions', async () => {
+  if (backend.name === 'sqlite') {
+    it('prunes old segments and empty ended sessions', async () => {
+      const session = await seed();
+      await repo.endSession(session.id, 6_000);
+      expect(await repo.pruneBefore(3_000)).toBe(3); // two in g1 and one in g2 started before 3s
+      expect((await repo.readRange({ guildId: 'g1', limit: 10, order: 'oldest_first' })).segments).toHaveLength(3);
+      expect(await repo.pruneBefore(10_000)).toBe(3);
+      expect(await repo.listSessions('g1', { limit: 5 })).toEqual([]);
+    });
+  }
+
+  it('keeps a session query to its own guild', async () => {
     const session = await seed();
-    await repo.endSession(session.id, 6_000);
-    expect(await repo.pruneBefore(3_000)).toBe(3); // two in g1 and one in g2 started before 3s
-    expect((await repo.readRange({ guildId: 'g1', limit: 10, order: 'oldest_first' })).segments).toHaveLength(3);
-    expect(await repo.pruneBefore(10_000)).toBe(3);
-    expect(await repo.listSessions('g1', { limit: 5 })).toEqual([]);
+    expect(await repo.search({ guildId: 'g2', sessionId: session.id, query: 'japan', limit: 5, contextSegments: 0 })).toEqual([]);
+    expect((await repo.readRange({ guildId: 'g2', sessionId: session.id, limit: 10, order: 'oldest_first' })).segments).toEqual([]);
+  });
+
+  it('reads one session, a time range and one speaker, paging from either end', async () => {
+    const session = await seed();
+    const range = await repo.readRange({ guildId: 'g1', sessionId: session.id, since: 2_000, until: 4_000, limit: 10, order: 'oldest_first' });
+    expect(range.segments.map((s) => s.speakerName)).toEqual(['Sam', 'Chase', 'Nimbus']);
+    const sam = await repo.readRange({ guildId: 'g1', speaker: 'sam', limit: 1, order: 'newest_first' });
+    expect(sam.segments.map((s) => s.text)).toEqual(['book by January then']);
+    expect(sam.hasMore).toBe(true);
   });
 
   it('stores recaps and finds ended sessions that still need one', async () => {

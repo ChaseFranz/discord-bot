@@ -8,7 +8,7 @@ import type { DeliverReminder, ReminderDeliveryInfo } from './ReminderScheduler.
 /** What delivery needs from the voice side. */
 export interface ReminderVoice {
   /** The people in the call with the assistant in this guild, or undefined when it isn't in one. */
-  callMembers(guildId: string): ReadonlyArray<{ id: string }> | undefined;
+  callMembers(guildId: string): ReadonlyArray<{ id: string }> | undefined | Promise<ReadonlyArray<{ id: string }> | undefined>;
   /** Says `text` in the guild's call. Resolves false if it couldn't. */
   announce(guildId: string, text: string): Promise<boolean>;
 }
@@ -28,7 +28,7 @@ export interface ReminderMessenger {
  */
 export function createReminderDelivery(deps: { voice: ReminderVoice; messenger: ReminderMessenger; logger: Logger }): DeliverReminder {
   return async (reminder, info) => {
-    const members = deps.voice.callMembers(reminder.guildId);
+    const members = await deps.voice.callMembers(reminder.guildId);
     const hearable =
       members !== undefined && (reminder.audience === 'everyone' ? members.length > 0 : members.some((member) => member.id === reminder.userId));
     if (hearable && (await deps.voice.announce(reminder.guildId, spokenReminder(reminder, info)))) {

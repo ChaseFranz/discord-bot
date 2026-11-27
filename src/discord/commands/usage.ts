@@ -11,9 +11,9 @@ export const usageCommand: BotCommand = {
   usage: '/usage - Shows what the assistant has spent today and over the last week.',
   ephemeral: true,
 
-  async execute(interaction, services) {
-    const report = await services.usage.report(interaction.guildId);
-    await interaction.editReply({ embeds: [usageEmbed(report, services.config.assistant.name)] });
+  async execute(context, services) {
+    const report = await services.usage.report(context.guildId);
+    await context.editReply({ embeds: [usageEmbed(report, services.config.assistant.name)] });
   },
 };
 
