@@ -16,7 +16,24 @@ import { PutSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-sec
 import { REST, Routes } from 'discord.js';
 import { describeError } from '../logging/logger.js';
 
-dotenv.config({ quiet: true });
+// .env is read into its own object, not process.env: it also holds the PC bot's AWS keys, which
+// the AWS SDK would otherwise find alongside your AWS_PROFILE (and could one day prefer to it).
+const dotEnv: Record<string, string | undefined> = {};
+dotenv.config({ quiet: true, processEnv: dotEnv });
+
+/** A setting from the environment, or else from .env. */
+function setting(name: string): string | undefined {
+  return (process.env[name] ?? dotEnv[name])?.trim() || undefined;
+}
+
+/** The region for AWS calls: AWS_REGION from the environment or .env, else your profile's. */
+function awsClientConfig(): { region?: string } {
+  const region = setting('AWS_REGION');
+  return region ? { region } : {};
+}
+
+/** A failure whose message says what to do. It's printed without a stack trace. */
+class ScriptError extends Error {}
 
 const STACK = 'NimbusCloud';
 const SECRETS: ReadonlyArray<[envVariable: string, secretName: string]> = [
@@ -34,33 +51,44 @@ async function main(): Promise<void> {
     case 'off':
       return pointCommandsAt(null);
     default:
-      throw new Error('Usage: awsSwitch.js secrets | on [url] | off');
+      throw new ScriptError('Usage: awsSwitch.js secrets | on [url] | off');
   }
 }
 
 async function copySecrets(): Promise<void> {
-  const client = new SecretsManagerClient({});
+  const client = new SecretsManagerClient(awsClientConfig());
   let copied = 0;
   for (const [variable, secretName] of SECRETS) {
-    const value = process.env[variable]?.trim();
+    const value = setting(variable);
     if (!value) continue;
     await client.send(new PutSecretValueCommand({ SecretId: secretName, SecretString: value }));
     process.stdout.write(`Stored ${variable} in ${secretName}.\n`);
     copied++;
   }
-  if (copied === 0) throw new Error('Nothing to copy: DISCORD_BOT_TOKEN is not set in .env.');
+  if (copied === 0) throw new ScriptError('Nothing to copy: DISCORD_BOT_TOKEN is not set in .env.');
 }
 
 async function stackEndpoint(): Promise<string> {
-  const result = await new CloudFormationClient({}).send(new DescribeStacksCommand({ StackName: STACK }));
+  const client = new CloudFormationClient(awsClientConfig());
+  let result;
+  try {
+    result = await client.send(new DescribeStacksCommand({ StackName: STACK }));
+  } catch (error) {
+    // CloudFormation has no error code of its own for a missing stack, only this message.
+    if (error instanceof Error && error.name === 'ValidationError' && error.message.includes('does not exist')) {
+      const region = await client.config.region();
+      throw new ScriptError(`The ${STACK} stack isn't deployed in ${region} yet. Deploy it first (see "Running on AWS" in readme.md).`);
+    }
+    throw error;
+  }
   const url = result.Stacks?.[0]?.Outputs?.find((output) => output.OutputKey === 'InteractionsEndpointUrl')?.OutputValue;
-  if (!url) throw new Error(`The ${STACK} stack has no InteractionsEndpointUrl output. Has it been deployed?`);
+  if (!url) throw new ScriptError(`The ${STACK} stack has no InteractionsEndpointUrl output. Is it still deploying?`);
   return url;
 }
 
 async function pointCommandsAt(url: string | null): Promise<void> {
-  const token = process.env.DISCORD_BOT_TOKEN?.trim();
-  if (!token) throw new Error('DISCORD_BOT_TOKEN is not set in .env.');
+  const token = setting('DISCORD_BOT_TOKEN');
+  if (!token) throw new ScriptError('DISCORD_BOT_TOKEN is not set in .env.');
   // Discord checks a new endpoint (a PING and some deliberately bad signatures) before accepting it.
   await new REST({ version: '10' }).setToken(token).patch(Routes.currentApplication(), { body: { interactions_endpoint_url: url } });
   process.stdout.write(
@@ -71,6 +99,6 @@ async function pointCommandsAt(url: string | null): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  process.stderr.write(`${describeError(error)}\n`);
+  process.stderr.write(`${error instanceof ScriptError ? error.message : describeError(error)}\n`);
   process.exit(1);
 });
