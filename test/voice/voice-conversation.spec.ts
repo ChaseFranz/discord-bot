@@ -317,6 +317,101 @@ describe('VoiceConversationService', () => {
       expect(events).toEqual(['hold music', 'think', 'release music']);
     });
 
+    describe('the chime, as soon as it hears its name', () => {
+      const CHIME = { wakeSound: Buffer.alloc(16) };
+      const holdsBalance = () => events.filter((event) => event === 'hold music').length - events.filter((event) => event === 'release music').length;
+
+      it('chimes while they are still talking, once, and keeps the music quiet from then on', async () => {
+        start(CHIME);
+        service.partial(session, 'u-alice', 'Nimbus');
+        await settle();
+        expect(played()).toEqual(['*chime*']);
+        expect(events).toEqual(['hold music']);
+        service.partial(session, 'u-alice', 'Nimbus, what time');
+        await settle();
+        expect(played()).toEqual(['*chime*']);
+
+        scripts.push(says('It is seven.'));
+        await hears('u-alice', 'Nimbus, what time is it?');
+        // No second chime once they have finished. The request takes its own hold on the music
+        // before the early one is let go, so the music never comes back in between.
+        expect(events).toEqual(['hold music', 'hold music', 'think', 'release music']);
+        await clipEnds();
+        expect(played()).toEqual(['*chime*', 'It is seven.']);
+        await clipEnds();
+        expect(holdsBalance()).toBe(0);
+      });
+
+      it('lets the music carry on when the name turns out not to be there, or nothing came of it', async () => {
+        start(CHIME);
+        service.partial(session, 'u-alice', 'Nimbus');
+        await settle();
+        // The final transcript has no name in it: a line for the others.
+        await hears('u-alice', 'pizza tonight?');
+        expect(turns).toHaveLength(0);
+        expect(events).toEqual(['hold music', 'release music']);
+
+        await clipEnds();
+        service.partial(session, 'u-sam', 'Nimbus');
+        await settle();
+        service.captureEnded(session, 'u-sam', false);
+        expect(events).toEqual(['hold music', 'release music', 'hold music', 'release music']);
+      });
+
+      it('does not chime early while it is talking, when it will not answer, or with the chime off', async () => {
+        service.partial(session, 'u-alice', 'Nimbus');
+        await settle();
+        expect(played()).toEqual([]);
+
+        start(CHIME);
+        paused = true;
+        service.partial(session, 'u-alice', 'Nimbus');
+        await settle();
+        paused = false;
+        privacy['u-sam'] = 'off';
+        service.partial(session, 'u-sam', 'Nimbus');
+        await settle();
+        expect(played()).toEqual([]);
+        expect(events).toEqual([]);
+
+        // Talking to Alice when Cara says its name: a busy reply says "one sec" instead.
+        scripts.push(says('A long answer. ', 'With two parts.'));
+        await hears('u-alice', 'Nimbus, tell me something');
+        await clipEnds();
+        expect(sink.playing).toBe('A long answer.');
+        service.partial(session, 'u-cara', 'Nimbus');
+        await settle();
+        expect(played()).toEqual(['*chime*', 'A long answer.']);
+      });
+
+      it('does not chime late when checking took until after they had finished', async () => {
+        let answer!: () => void;
+        const slow = new Promise<void>((resolve) => (answer = resolve));
+        let asked = 0;
+        start({ ...CHIME, privacy: { level: async () => ((asked++ === 0 ? await slow : undefined), 'full') } });
+        service.partial(session, 'u-alice', 'Nimbus');
+        await settle();
+        expect(played()).toEqual([]);
+        scripts.push(says('Hi.'));
+        await hears('u-alice', 'Nimbus, hi');
+        // Its chime when they finished, as before.
+        expect(played()).toEqual(['*chime*']);
+        answer();
+        await settle();
+        await clipEnds(2);
+        expect(played()).toEqual(['*chime*', 'Hi.']);
+        expect(holdsBalance()).toBe(0);
+      });
+
+      it('lets go of the music when the call ends', async () => {
+        start(CHIME);
+        service.partial(session, 'u-alice', 'Nimbus');
+        await settle();
+        service.sessionEnded('g');
+        expect(events).toEqual(['hold music', 'release music']);
+      });
+    });
+
     it('says the refusal in place of anything it had started to say', async () => {
       scripts.push(refuses('Well, first you take. '));
       await hears('u-alice', 'Nimbus, something it declines');

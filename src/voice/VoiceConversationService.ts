@@ -125,6 +125,15 @@ interface CallState {
   holds: Set<string>;
   /** People whose "stop" was acted on before they had finished saying it. */
   stoppedEarly: Set<string>;
+  /**
+   * People it chimed for as soon as it heard its name, while they were still talking, with the
+   * hold on the music taken then. Both end when what they were saying has been dealt with.
+   */
+  earlyWakes: Map<string, () => void>;
+  /** People whose early chime is waiting on a check (their privacy choice). */
+  wakeChecks: Set<string>;
+  /** How many times each person has finished saying something: tells a slow check that the moment has passed. */
+  finished: Map<string, number>;
   driving: boolean;
   acknowledgements: number;
 }
@@ -167,6 +176,8 @@ export class VoiceConversationService implements CallListener {
   readonly utterance = async (session: VoiceSession, utterance: CapturedUtterance): Promise<void> => {
     const { deps } = this;
     const { userId } = utterance;
+    // Before anything that waits, so a check still going on for this utterance knows it is over.
+    const early = this.finishedSpeaking(session.guildId, userId);
     try {
       const transcriptSessionId = session.transcriptSessionId;
       if (transcriptSessionId === undefined) return;
@@ -221,9 +232,16 @@ export class VoiceConversationService implements CallListener {
       // If this puts a reply on hold, the note on how far it had got goes on record just before the line.
       this.holdForDecision(state, userId);
       state.conversation.hear(line);
-      this.accept(state, { id: userId, name: speakerName, said: [utterance.text], spokeUntil: utterance.lastAudioAt, transcribedAt: utterance.endedAt }, named);
+      this.accept(
+        state,
+        { id: userId, name: speakerName, said: [utterance.text], spokeUntil: utterance.lastAudioAt, transcribedAt: utterance.endedAt },
+        named,
+        early !== undefined,
+      );
     } finally {
-      // Whatever they said has been dealt with; their voice no longer holds anything back.
+      // Whatever they said has been dealt with; their voice no longer holds anything back. (A
+      // request has its own hold on the music by now, so it stays quiet.)
+      early?.();
       this.doneTalking(session.guildId, userId, true);
     }
   };
@@ -244,21 +262,67 @@ export class VoiceConversationService implements CallListener {
     this.hold(state, talking(userId));
   };
 
-  /** What someone has said so far. "Nimbus, stop" is acted on before they've finished the breath. */
+  /**
+   * What someone has said so far. "Nimbus, stop" is acted on before they've finished the breath,
+   * and on hearing its name it chimes at once, while they are still talking.
+   */
   readonly partial = (session: VoiceSession, userId: string, text: string): void => {
-    const state = this.calls.get(session.guildId);
-    if (!state?.live || state.stoppedEarly.has(userId)) return;
-    if (!state.turn && !state.reply) return;
     const withoutName = this.deps.wakeWord.stripKeyword(text);
-    if (withoutName === undefined || parseVoiceCommand(withoutName) !== 'stop') return;
-    state.stoppedEarly.add(userId);
-    this.stopFor(state, session.channel.guild.members.cache.get(userId)?.displayName ?? `user ${userId}`);
+    if (withoutName === undefined) return;
+    const state = this.calls.get(session.guildId);
+    if (state?.live && !state.stoppedEarly.has(userId) && (state.turn || state.reply) && parseVoiceCommand(withoutName) === 'stop') {
+      state.stoppedEarly.add(userId);
+      this.stopFor(state, session.channel.guild.members.cache.get(userId)?.displayName ?? `user ${userId}`);
+      return;
+    }
+    void this.wakeEarly(session, userId).catch((error: unknown) => this.deps.logger.warn(`Could not chime for ${userId}: ${describeError(error)}`));
   };
 
   readonly captureEnded = (session: VoiceSession, userId: string, heard: boolean): void => {
     // When something was heard, the utterance handler finishes up once it has dealt with it.
-    if (!heard) this.doneTalking(session.guildId, userId, false);
+    if (heard) return;
+    // Nothing came of it (a name that wasn't one, after all): the music carries on.
+    this.finishedSpeaking(session.guildId, userId)?.();
+    this.doneTalking(session.guildId, userId, false);
   };
+
+  /**
+   * The chime, as soon as its name is heard rather than once they have finished, so they know it
+   * is listening; and the music stays quiet from then on. Not while it is talking (then a busy
+   * reply says "one sec" instead), and not when it won't answer them anyway.
+   */
+  private async wakeEarly(session: VoiceSession, userId: string): Promise<void> {
+    const { deps } = this;
+    const transcriptSessionId = session.transcriptSessionId;
+    if (!deps.wakeSound || transcriptSessionId === undefined) return;
+    const state = this.state(session, transcriptSessionId);
+    if (!state.live || state.earlyWakes.has(userId) || state.wakeChecks.has(userId)) return;
+    if (deps.budget.isPaused(session.guildId) || session.channel.guild.members.cache.get(userId)?.user.bot) return;
+    const finished = state.finished.get(userId) ?? 0;
+    state.wakeChecks.add(userId);
+    let privacy: PrivacyLevel;
+    try {
+      // They may have opted out a moment ago, in another process: nothing they say is acted on then.
+      privacy = await deps.privacy.level(session.guildId, userId);
+    } finally {
+      state.wakeChecks.delete(userId);
+    }
+    if (privacy === 'off' || !state.live || this.calls.get(session.guildId) !== state) return;
+    // Too late: they have finished, and what they said has been dealt with (with its own chime, if it needed one).
+    if ((state.finished.get(userId) ?? 0) !== finished || session.speechPaused) return;
+    if (!session.playEarcon(deps.wakeSound)) return;
+    state.earlyWakes.set(userId, session.holdMusic());
+  }
+
+  /** `userId` has finished saying something. Returns the release of their early chime's music hold, if there was one. */
+  private finishedSpeaking(guildId: string, userId: string): (() => void) | undefined {
+    const state = this.calls.get(guildId);
+    if (!state) return undefined;
+    state.finished.set(userId, (state.finished.get(userId) ?? 0) + 1);
+    const release = state.earlyWakes.get(userId);
+    state.earlyWakes.delete(userId);
+    return release;
+  }
 
   // ---------------------------------------------------------------------------
   // Other entry points
@@ -320,6 +384,9 @@ export class VoiceConversationService implements CallListener {
       window: undefined,
       holds: new Set(),
       stoppedEarly: new Set(),
+      earlyWakes: new Map(),
+      wakeChecks: new Set(),
+      finished: new Map(),
       driving: false,
       acknowledgements: 0,
     };
@@ -332,6 +399,8 @@ export class VoiceConversationService implements CallListener {
     state.turn?.controller.abort();
     state.waiting.clear();
     state.holds.clear();
+    for (const release of state.earlyWakes.values()) release();
+    state.earlyWakes.clear();
   }
 
   /** How a line relates to the assistant, from what the bot can observe. Claude makes the real call. */
@@ -394,7 +463,7 @@ export class VoiceConversationService implements CallListener {
     return !turn.acted && !turn.stopped && turn.reply?.speech.audioStarted !== true;
   }
 
-  private accept(state: CallState, asker: Asker, named: boolean): void {
+  private accept(state: CallState, asker: Asker, named: boolean, chimed: boolean): void {
     const { deps } = this;
     const { turn, reply } = state;
     merge(state.waiting, asker);
@@ -408,7 +477,7 @@ export class VoiceConversationService implements CallListener {
       // Someone else is being answered. Let this person know they were heard.
       this.acknowledge(state, reply, asker);
     }
-    if (named && deps.wakeSound) state.session.playEarcon(deps.wakeSound);
+    if (named && !chimed && deps.wakeSound) state.session.playEarcon(deps.wakeSound);
     void this.drive(state);
   }
 
