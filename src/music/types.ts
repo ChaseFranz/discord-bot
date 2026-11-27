@@ -16,6 +16,12 @@ export interface TrackSource {
   resolve(query: string): Promise<Track | null>;
   /** Opens an audio stream for the track, in any container/codec ffmpeg can read. */
   open(track: Track): Promise<Readable>;
+  /**
+   * Told that a track from `resolve` has left the queue (it finished, was skipped, or the queue was
+   * cleared), so anything still being prepared for it can stop. Optional: most sources have nothing
+   * going on between `resolve` and `open`.
+   */
+  discard?(track: Track): Promise<void>;
 }
 
 export type PlaybackState = 'idle' | 'buffering' | 'playing' | 'paused';

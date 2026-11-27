@@ -25,7 +25,14 @@ export class MusicService {
     if (!resolved) throw new MusicError(`No results found for "${query}".`);
     const track: Track = { ...resolved, requestedBy };
 
-    const output = await this.host.ensureOutput(guildId, voiceChannelId);
+    let output: MusicOutput;
+    try {
+      output = await this.host.ensureOutput(guildId, voiceChannelId);
+    } catch (error) {
+      // It never made it into a queue.
+      this.discard(track);
+      throw error;
+    }
     let queue = this.queues.get(guildId);
     if (!queue || queue.output !== output) {
       if (queue) this.dispose(guildId, queue);
@@ -104,7 +111,8 @@ export class MusicService {
 
   private async advance(guildId: string, queue: GuildQueue): Promise<void> {
     if (this.queues.get(guildId) !== queue) return;
-    queue.tracks.shift();
+    const over = queue.tracks.shift();
+    if (over) this.discard(over);
     if (queue.tracks.length > 0) {
       await this.startCurrent(guildId, queue);
     } else {
@@ -128,6 +136,7 @@ export class MusicService {
       } catch (error) {
         this.logger.warn(`Could not open "${track.title}" (${track.url}): ${describeError(error)}`);
         queue.tracks.shift();
+        this.discard(track);
       }
     }
     if (this.queues.get(guildId) === queue && queue.tracks.length === 0) {
@@ -145,7 +154,16 @@ export class MusicService {
   private dispose(guildId: string, queue: GuildQueue): void {
     for (const unsubscribe of queue.unsubscribe) unsubscribe();
     queue.unsubscribe = [];
+    for (const track of queue.tracks) this.discard(track);
     queue.tracks = [];
     if (this.queues.get(guildId) === queue) this.queues.delete(guildId);
+  }
+
+  /** Tells the source a track has left the queue, so whatever it is still preparing for it can stop. */
+  private discard(track: Track): void {
+    if (!this.source.discard) return;
+    void Promise.resolve()
+      .then(() => this.source.discard?.(track))
+      .catch((error: unknown) => this.logger.warn(`Could not let go of "${track.title}": ${describeError(error)}`));
   }
 }

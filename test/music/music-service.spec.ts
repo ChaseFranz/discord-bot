@@ -113,4 +113,74 @@ describe('MusicService', () => {
   it('rejects searches with no result', async () => {
     await expect(music.play('g', 'vc', 'nothing')).rejects.toThrow('No results');
   });
+
+  describe('with a source that prepares tracks ahead of playing them', () => {
+    let discarded: string[];
+    let joinFails: boolean;
+
+    beforeEach(() => {
+      discarded = [];
+      joinFails = false;
+      const host: MusicHost = {
+        ensureOutput: async () => {
+          if (joinFails) throw new MusicError('Join a voice channel first.');
+          return output;
+        },
+        queueFinished: (guildId) => finished.push(guildId),
+      };
+      const preparing: TrackSource = {
+        ...source,
+        discard: async (track) => {
+          discarded.push(track.title);
+          if (track.title.includes('stubborn')) throw new Error('the database is down');
+        },
+      };
+      music = new MusicService(host, preparing, silentLogger());
+    });
+
+    it('tells it when a track finishes, is skipped, or cannot be opened', async () => {
+      await music.play('g', 'vc', 'a');
+      await music.play('g', 'vc', 'b');
+      await music.play('g', 'vc', 'broken');
+      await music.play('g', 'vc', 'c');
+      expect(discarded).toEqual([]);
+      output.finish();
+      await flush();
+      expect(discarded).toEqual(['Song a']);
+      music.skip('g');
+      await flush();
+      // "b" was skipped, and "broken" could not be opened on the way to "c".
+      expect(discarded).toEqual(['Song a', 'Song b', 'Song broken']);
+      expect(music.status('g').current).toMatchObject({ title: 'Song c' });
+    });
+
+    it('tells it about everything still queued when the music is stopped or the call goes away', async () => {
+      await music.play('g', 'vc', 'a');
+      await music.play('g', 'vc', 'b');
+      music.stop('g');
+      await flush();
+      expect(discarded).toEqual(['Song a', 'Song b']);
+
+      await music.play('g', 'vc', 'c');
+      await music.play('g', 'vc', 'd');
+      music.detach('g');
+      await flush();
+      expect(discarded).toEqual(['Song a', 'Song b', 'Song c', 'Song d']);
+    });
+
+    it('tells it about a track that never got into a queue, and carries on if telling it fails', async () => {
+      joinFails = true;
+      await expect(music.play('g', 'vc', 'a')).rejects.toThrow('Join a voice channel first.');
+      await flush();
+      expect(discarded).toEqual(['Song a']);
+
+      joinFails = false;
+      await music.play('g', 'vc', 'stubborn');
+      await music.play('g', 'vc', 'b');
+      music.skip('g');
+      await flush();
+      expect(discarded).toEqual(['Song a', 'Song stubborn']);
+      expect(music.status('g').current).toMatchObject({ title: 'Song b' });
+    });
+  });
 });
