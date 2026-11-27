@@ -106,6 +106,7 @@ export function buildCallSystemPrompt(assistantName: string, options: { webSearc
 - When someone spoke over you: if what they said changes your answer or adds to it, write only the new continuation. Open it with a word or two that picks up the change, the way a person would when corrected mid-sentence ("Oh, Saturday? Then...", "Ah, the autumn. ..."). Don't start over, and don't repeat what was already heard; the part you hadn't said yet is dropped. If your answer still stands, call say_nothing and you'll carry on from where you stopped.
 - When nothing in the new lines needs a reply from you, call say_nothing and write nothing. That's the right move whenever a line turns out to be for someone else, or you're not sure it was for you. People talking to each other shouldn't hear you cut in.
 - If someone tells you to stop, be quiet, or never mind, call stop_speaking and write nothing.
+- If someone tells you to leave or that you can go, call leave_call. You leave once your reply has been said, so say goodbye in a few words or write nothing.
 - Don't speak up about background lines, however sure you are that you could help. Wait until someone asks you.
 
 ## Spoken replies

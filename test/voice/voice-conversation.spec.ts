@@ -51,7 +51,7 @@ class FakeSink implements AudioSink<string> {
 type Script = (request: CallTurnRequest, mark: CallMark) => Promise<CallTurnReply>;
 
 const answer = (text: string, extra: Partial<CallTurnReply> = {}): CallTurnReply => ({
-  text, silent: false, stopped: false, outcome: 'answered', sources: [], model: 'claude-haiku-5-5', ...extra,
+  text, silent: false, stopped: false, leave: false, outcome: 'answered', sources: [], model: 'claude-haiku-5-5', ...extra,
 });
 const spoken = (text: string): ConversationMessage[] => [{ role: 'assistant', content: [{ type: 'text', text }] }];
 const toolCall = (name: string): ConversationMessage[] => [
@@ -75,6 +75,14 @@ const staysQuiet = (): Script => async (request, mark) => {
 const saysItWasToldToStop = (): Script => async (request, mark) => {
   request.conversation.reply(mark, toolCall('stop_speaking'));
   return answer('', { silent: true, stopped: true });
+};
+/** Told to leave: it calls leave_call, then says goodbye (or nothing). */
+const saysGoodbyeAndLeaves = (...pieces: string[]): Script => async (request, mark) => {
+  request.onToolCall?.('leave_call');
+  for (const piece of pieces) request.onText?.(piece);
+  request.signal?.throwIfAborted();
+  request.conversation.reply(mark, [...toolCall('leave_call'), ...(pieces.length > 0 ? spoken(pieces.join('')) : [])]);
+  return answer(pieces.join(''), { leave: true });
 };
 const refuses = (...before: string[]): Script => async (request) => {
   for (const piece of before) request.onText?.(piece);
@@ -183,7 +191,10 @@ describe('VoiceConversationService', () => {
         status: () => ({ state: musicState, current: undefined, upcoming: [] }),
         pause: () => events.push('pause music'),
       },
-      sessions: { get: (guildId: string) => (guildId === 'g' ? session : undefined) },
+      sessions: {
+        get: (guildId: string) => (guildId === 'g' ? session : undefined),
+        leave: async (guildId: string) => (events.push(`leave ${guildId}`), true),
+      },
       privacy: { level: async (_guildId: string, userId: string) => privacy[userId] ?? 'full' },
       budget: { isPaused: () => paused },
       wakeWord: new KeywordDetector('nimbus'),
@@ -853,6 +864,55 @@ describe('VoiceConversationService', () => {
       expect(sink.playing).toBeUndefined();
       await clipEnds(2);
       expect(played()).toEqual(['A long story.']);
+    });
+
+    it('leaves when told to, once it has said goodbye', async () => {
+      scripts.push(saysGoodbyeAndLeaves('Okay, see you later!'));
+      await hears('u-alice', 'Nimbus, you can leave now');
+      // It is still here while the goodbye plays.
+      expect(sink.playing).toBe('Okay, see you later!');
+      expect(events).not.toContain('leave g');
+      await clipEnds();
+      expect(events).toContain('leave g');
+      expect(logged).toContain('Leaving the call: Alice said to.');
+      expect(await lines()).toEqual(['Alice: Nimbus, you can leave now', '*Nimbus: Okay, see you later!']);
+    });
+
+    it('leaves at once when it has nothing to say on the way out', async () => {
+      scripts.push(saysGoodbyeAndLeaves());
+      await hears('u-alice', 'Nimbus, get out');
+      expect(events).toContain('leave g');
+    });
+
+    it('still leaves if someone talks over the goodbye and nothing they say changes it', async () => {
+      scripts.push(saysGoodbyeAndLeaves('Okay, I will head out now. ', 'Have a good one!'));
+      await hears('u-alice', 'Nimbus, leave');
+      // Alice talks over it: it freezes, and what she said goes to Claude, which has nothing to add.
+      talks('u-alice');
+      expect(sink.events).toContain('pause');
+      scripts.push(staysQuiet());
+      await hears('u-alice', 'thanks', 1_000);
+      expect(events).not.toContain('leave g');
+      await clipEnds(2);
+      expect(played()).toEqual(['Okay, I will head out now.', 'Have a good one!']);
+      expect(events).toContain('leave g');
+    });
+
+    it('stays if what they say over the goodbye changes its mind, or it is told to stop', async () => {
+      scripts.push(saysGoodbyeAndLeaves('Okay, I will head out now. ', 'Have a good one!'));
+      await hears('u-alice', 'Nimbus, leave');
+      talks('u-alice');
+      scripts.push(says('Oh, sure, I can stay.'));
+      await hears('u-alice', 'wait, actually stay, one more question', 1_000);
+      await clipEnds(3);
+      expect(played()).toEqual(['Okay, I will head out now.', 'Oh, sure, I can stay.']);
+      expect(events).not.toContain('leave g');
+
+      scripts.push(saysGoodbyeAndLeaves('Okay, I will head out now. ', 'Have a good one!'));
+      await hears('u-alice', 'Nimbus, leave', 20_000);
+      await hears('u-sam', 'Nimbus, stop', 500);
+      await clipEnds(3);
+      expect(events).not.toContain('leave g');
     });
 
     it('pauses the music when there is nothing else to stop', async () => {

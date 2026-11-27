@@ -16,7 +16,7 @@ const context = (overrides: Partial<ToolContext> = {}): ToolContext => ({
   modality: 'voice',
   voiceChannelId: 'vc',
   textChannelId: 'vc',
-  signals: { silenceRequested: false, stopRequested: false },
+  signals: { silenceRequested: false, stopRequested: false, leaveRequested: false },
   ...overrides,
 });
 
@@ -112,21 +112,56 @@ describe('music and voice tools', () => {
 
   it('stop_speaking flags the turn silent and stops speech', async () => {
     let stopped = false;
-    const voice = createVoiceToolProvider({ get: () => ({ stopSpeaking: () => ((stopped = true), true) }) });
+    const voice = createVoiceToolProvider({ get: () => ({ stopSpeaking: () => ((stopped = true), true) }), leave: async () => true });
     const ctx = context();
     expect(await voice.callTool('stop_speaking', {}, ctx)).toEqual({ content: 'Stopped speaking.' });
-    expect(ctx.signals).toEqual({ silenceRequested: true, stopRequested: true });
+    expect(ctx.signals).toEqual({ silenceRequested: true, stopRequested: true, leaveRequested: false });
     expect(stopped).toBe(true);
   });
 
   it('say_nothing flags the turn silent without stopping anything', async () => {
     let stopped = false;
-    const voice = createVoiceToolProvider({ get: () => ({ stopSpeaking: () => ((stopped = true), true) }) });
+    const voice = createVoiceToolProvider({ get: () => ({ stopSpeaking: () => ((stopped = true), true) }), leave: async () => true });
     const ctx = context();
     expect(await voice.callTool('say_nothing', {}, ctx)).toEqual({ content: 'Staying quiet.' });
     // Whatever was being said carries on: only this turn stays quiet.
-    expect(ctx.signals).toEqual({ silenceRequested: true, stopRequested: false });
+    expect(ctx.signals).toEqual({ silenceRequested: true, stopRequested: false, leaveRequested: false });
     expect(stopped).toBe(false);
-    expect(voice.listTools().map((tool) => tool.name)).toEqual(['say_nothing', 'stop_speaking']);
+    expect(voice.listTools().map((tool) => tool.name)).toEqual(['say_nothing', 'stop_speaking', 'leave_call']);
+  });
+
+  describe('leave_call', () => {
+    let inCall: boolean;
+    let left: string[];
+    const voice = createVoiceToolProvider({
+      get: () => (inCall ? { stopSpeaking: () => false } : undefined),
+      leave: async (guildId) => (left.push(guildId), true),
+    });
+    beforeEach(() => {
+      inCall = true;
+      left = [];
+    });
+
+    it('asked for in a call, leaves it to the call to see it out once the goodbye has been said', async () => {
+      const ctx = context();
+      expect(await voice.callTool('leave_call', {}, ctx)).toEqual({ content: 'You will leave the call as soon as your reply has been said.' });
+      // The reply is still spoken: this turn is not silenced, and nothing has left yet.
+      expect(ctx.signals).toEqual({ silenceRequested: false, stopRequested: false, leaveRequested: true });
+      expect(left).toEqual([]);
+    });
+
+    it('asked for in a typed message, leaves at once', async () => {
+      const ctx = context({ modality: 'text' });
+      expect(await voice.callTool('leave_call', {}, ctx)).toEqual({ content: 'Left the voice call.' });
+      expect(left).toEqual(['g']);
+      expect(ctx.signals.leaveRequested).toBe(false);
+    });
+
+    it('says so when it is not in a call', async () => {
+      inCall = false;
+      const ctx = context({ modality: 'text' });
+      expect(await voice.callTool('leave_call', {}, ctx)).toEqual({ content: 'You are not in a voice call.', isError: true });
+      expect(left).toEqual([]);
+    });
   });
 });

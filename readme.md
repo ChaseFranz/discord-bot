@@ -152,7 +152,7 @@ npm run smoke -- --aws        # AWS only
 | Command | What it does |
 | --- | --- |
 | `/join` | Joins your voice channel and starts listening. Say the wake word ("Nimbus") to talk. |
-| `/leave` | Leaves the voice channel (and stops music). It also leaves by itself after `AUTO_LEAVE_MINUTES` (default 2) with nobody else in the channel. |
+| `/leave` | Leaves the voice channel (and stops music). It also leaves when someone in the call tells it to ("Nimbus, you can go now"), and by itself after `AUTO_LEAVE_MINUTES` (default 2) with nobody else in the channel. |
 | `/chat prompt:` | Type to the assistant; shares your conversation with voice. Up to 200 characters; @mention it for longer messages or images. |
 | @Nimbus *message* | Mention it (or reply to one of its messages) in any channel or thread. No length limit, and it can see attached images. |
 | `/privacy transcription:` | Choose what Nimbus transcribes when you talk (see Privacy above). Without an option, shows your current choice. |
@@ -165,7 +165,7 @@ npm run smoke -- --aws        # AWS only
 | `/musichelper` | On AWS: shows who is running a [music helper](helper/README.md) and gives you the code to set up your own. Shown only to you. |
 | `/help` | Lists commands. |
 
-By voice: "Nimbus, play Bohemian Rhapsody", "Nimbus, skip this", "Nimbus, what did Alex say about the game?", "Nimbus, what's the weather tomorrow?", "Nimbus, remind me in 10 minutes to take the pizza out", "Nimbus, stop".
+By voice: "Nimbus, play Bohemian Rhapsody", "Nimbus, skip this", "Nimbus, what did Alex say about the game?", "Nimbus, what's the weather tomorrow?", "Nimbus, remind me in 10 minutes to take the pizza out", "Nimbus, stop", "Nimbus, you can go now" (it says goodbye and leaves the call).
 
 ### Talking to Nimbus
 

@@ -156,6 +156,8 @@ export interface AssistantReply {
 export interface CallTurnReply extends AssistantReply {
   /** stop_speaking was called: someone told the assistant to stop, so everything should go quiet. */
   stopped: boolean;
+  /** leave_call was called: someone told the assistant to go, so it leaves once the reply has been said. */
+  leave: boolean;
 }
 
 /** Server-side refusal fallback; documented for these models (Claude Haiku 5.5 has none). */
@@ -303,7 +305,7 @@ export class Assistant {
     ];
     const turn: BetaMessageParam[] = [{ role: 'user', content: [{ type: 'text', text: storedText }] }];
 
-    const signals: TurnSignals = { silenceRequested: false, stopRequested: false };
+    const signals: TurnSignals = { silenceRequested: false, stopRequested: false, leaveRequested: false };
     const toolContext: ToolContext = {
       guildId: request.scope.guildId,
       userId: request.scope.userId,
@@ -389,7 +391,7 @@ export class Assistant {
     });
 
     const turn: BetaMessageParam[] = [];
-    const signals: TurnSignals = { silenceRequested: false, stopRequested: false };
+    const signals: TurnSignals = { silenceRequested: false, stopRequested: false, leaveRequested: false };
     let result: Awaited<ReturnType<Assistant['runLoop']>>;
     try {
       result = await this.runLoop({
@@ -416,7 +418,7 @@ export class Assistant {
     if (outcome === 'refused') {
       // The lines that were declined come out of the conversation, or every later turn would be declined too.
       conversation.strike(mark, 'Some of what was said here has been left out: you declined to respond to it.');
-      return { text: "Sorry, I can't help with that one.", silent: false, stopped: false, outcome, sources: [], model: servedBy };
+      return { text: "Sorry, I can't help with that one.", silent: false, stopped: false, leave: false, outcome, sources: [], model: servedBy };
     }
 
     if (!conversation.reply(mark, finalizeTurn(turn))) {
@@ -428,6 +430,7 @@ export class Assistant {
       text,
       silent: signals.silenceRequested,
       stopped: signals.stopRequested,
+      leave: signals.leaveRequested,
       outcome,
       sources: collectSources(output),
       model: servedBy,

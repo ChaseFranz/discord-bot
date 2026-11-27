@@ -25,6 +25,8 @@ export interface TurnSignals {
   silenceRequested: boolean;
   /** Set by stop_speaking: someone told the assistant to stop, so whatever it was saying ends too. */
   stopRequested: boolean;
+  /** Set by leave_call in a call: leave once this turn's reply has been said. */
+  leaveRequested: boolean;
 }
 
 /** Who a tool call is acting for. Filled in by the harness, never by the model. */
