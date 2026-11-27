@@ -149,7 +149,8 @@ describe('the music helper script', () => {
     await connected();
     const track = (await source.resolve('an endless song'))!;
     await until('some of it to arrive', async () => ((await board.get(GUILD, track.handle!))?.chunks ?? 0) >= 2);
-    await board.abandon(GUILD, track.handle!, 'skipped', Date.now());
+    // Skipped: the track leaves the queue, which is what tells its helper.
+    await source.discard(track);
     await until('the helper to stop', () => output.includes('Stopped fetching "jellyfish jam": it\'s no longer wanted.'));
     const sent = (await board.get(GUILD, track.handle!))!.chunks;
     await new Promise((resolve) => setTimeout(resolve, 300));

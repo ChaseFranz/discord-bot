@@ -312,6 +312,37 @@ describe('music helpers', () => {
       await expect(read(await source.open(gap.track))).rejects.toThrow('Part 1 of the song is missing.');
     });
 
+    it('tells a helper to stop sending a song that has left the queue, and leaves a finished one alone', async () => {
+      const token = await running();
+      const begin = async () => {
+        let job!: { id: string };
+        inMs(500, async () => {
+          job = await take(token);
+          await post('/report', { token, jobId: job.id, kind: 'found', videoId: 'oWqAf4eex14', title: 'a three hour mix' });
+        });
+        const track = (await source.resolve('a three hour mix'))!;
+        return { job, track };
+      };
+
+      // Skipped a minute in, while the helper is still uploading it.
+      const skipped = await begin();
+      upload(skipped.job, 0, 'one ');
+      expect((await post('/report', { token, jobId: skipped.job.id, kind: 'progress', chunks: 1 })).body).toEqual({ ok: true });
+      await source.discard(skipped.track);
+      expect(await board.get(GUILD, skipped.job.id)).toMatchObject({ status: 'failed', error: 'no longer wanted', chunks: 1 });
+      // That is how the helper finds out: its next report is turned down, and it stops.
+      expect((await post('/report', { token, jobId: skipped.job.id, kind: 'progress', chunks: 2 })).body).toEqual({ ok: false });
+
+      // One that has arrived in full stays as it is.
+      const whole = await begin();
+      upload(whole.job, 0, 'all of it');
+      await post('/report', { token, jobId: whole.job.id, kind: 'done', chunks: 1 });
+      await source.discard(whole.track);
+      expect(await board.get(GUILD, whole.job.id)).toMatchObject({ status: 'done', error: null });
+      // Nothing to do for a track this source has no audio on its way for.
+      await source.discard({ title: 'from somewhere else', url: 'https://www.youtube.com/watch?v=oWqAf4eex14' });
+    });
+
     it('asks a helper again for a track it has no audio on its way for', async () => {
       const token = await running();
       inMs(500, async () => {

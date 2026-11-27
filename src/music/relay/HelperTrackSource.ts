@@ -19,6 +19,8 @@ export interface HelperTrackSourceDeps {
 
 /** What a helper reports when the search came back empty. */
 export const NOTHING_FOUND = 'nothing-found';
+/** Why a job was given up on when its track left the queue before the helper had finished. */
+const NO_LONGER_WANTED = 'no longer wanted';
 /** A helper asks for work every few seconds, so one that is running has taken the job by now. */
 const CLAIM_PATIENCE_MS = 12_000;
 /** How long a helper may go without reporting anything new before the bot gives up on it. */
@@ -63,6 +65,15 @@ export class HelperTrackSource implements TrackSource {
     const again = await this.resolve(track.url);
     if (!again?.handle) throw new Error(`Nothing was found for ${track.url}`);
     return Readable.from(this.chunks(again.handle));
+  }
+
+  /**
+   * The track has left the queue. If its helper is still sending it (a long video, say, that was
+   * skipped a minute in), the helper is told to stop at its next report. A song that has already
+   * arrived is left as it is.
+   */
+  async discard(track: Track): Promise<void> {
+    if (track.handle) await this.deps.board.abandon(this.deps.guildId, track.handle, NO_LONGER_WANTED, this.deps.clock());
   }
 
   /** Waits until a helper has said which video the job is (or that there is none). */
