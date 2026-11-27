@@ -32,8 +32,9 @@ export interface VoiceSessionDeps {
   clock: Clock;
   capture: CaptureOptions;
   /**
-   * Decides, each time someone starts talking, whether their audio may be transcribed (their
-   * privacy choice, the daily budget). When it says no, nothing is captured or sent anywhere.
+   * Decides, each time someone starts talking and again every second while they talk, whether
+   * their audio may be transcribed (their privacy choice, the daily budget). When it says no,
+   * nothing is captured or sent anywhere, and what is being captured stops there.
    */
   admitSpeaker: (guildId: string, userId: string) => boolean | Promise<boolean>;
   meter: UsageMeter;
@@ -276,6 +277,8 @@ export class VoiceSession {
         clock: this.deps.clock,
         logger: this.deps.logger,
         signal: controller.signal,
+        // Asked again while they talk, so opting out (or the budget running out) holds mid-sentence.
+        stillAllowed: () => this.deps.admitSpeaker(this.guildId, userId),
         onAudioSent: (seconds) => this.deps.meter.recordTranscription(this.guildId, seconds),
         onAudio: (audioMs) => {
           if (live()) this.notify(() => listener.speaking?.(userId, audioMs));

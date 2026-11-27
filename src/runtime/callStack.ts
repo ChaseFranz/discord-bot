@@ -54,6 +54,8 @@ export async function buildCallStack(core: Core, bot: DiscordBot, alarm: Reminde
     clock,
     capture: { ...DEFAULT_CAPTURE_OPTIONS, silenceMs: config.call.silenceMs },
     // Nothing is captured from people who opted out, or from anyone once today's budget is spent.
+    // Asked when someone starts talking and every second while they do, and read from storage each
+    // time: on AWS /privacy is handled by another process, and this is how a choice made there holds here.
     admitSpeaker: async (guild, userId) => !usage.isPaused(guild) && (await privacy.level(guild, userId)) !== 'off',
     meter: usage,
     transcripts: storage.transcripts,
@@ -134,7 +136,7 @@ export async function buildCallStack(core: Core, bot: DiscordBot, alarm: Reminde
       .announce(guild, "Heads up: I've hit today's spending limit, so I'm going to stop listening until midnight.")
       .catch((error: unknown) => logger.warn(`Could not announce the budget pause: ${describeError(error)}`));
   });
-  // Opting out takes effect mid-sentence: stop sending what they're saying right now.
+  // Opting out through this process takes effect at once: stop sending what they're saying right now.
   privacy.onChange((guild, userId, level) => {
     if (level === 'off') voice.get(guild)?.cancelCapture(userId);
   });

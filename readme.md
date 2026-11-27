@@ -55,7 +55,7 @@ In a call, Claude sees the whole conversation since Nimbus started listening (in
 
 **Scoping and privacy.** The memory tools always run scoped to the server, and the personal-history tool to the person speaking. The bot fills those parameters in itself, so a conversation can't read another server's transcripts or another person's thread. `/join` announces that the channel is being transcribed. Transcripts, their recaps, out-of-view conversation turns and finished reminders are deleted after `MEMORY_RETENTION_DAYS` (default 30; `0` keeps everything). `/reset` deletes your whole thread.
 
-**Choosing what gets transcribed.** Each person picks one of three levels with `/privacy`, and it takes effect immediately, even mid-sentence:
+**Choosing what gets transcribed.** Each person picks one of three levels with `/privacy`, and it takes effect within a second, even mid-sentence and in a call that's already going:
 
 | Level | What happens |
 | --- | --- |
