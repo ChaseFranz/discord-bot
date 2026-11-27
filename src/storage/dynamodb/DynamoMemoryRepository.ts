@@ -1,10 +1,11 @@
-import { DeleteCommand, GetCommand, PutCommand, UpdateCommand, type DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
+import { DeleteCommand, GetCommand, UpdateCommand, type DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import type { Memory, MemoryRepository, NewMemory } from '../ports.js';
 import { queryTerms, rankByRelevance } from '../search/textSearch.js';
-import { deleteKeys, isConflict, names, nextId, pad, queryAll, type Item } from './dynamo.js';
+import { deleteKeys, isConflict, names, pad, putWithNewId, queryAll, type Item } from './dynamo.js';
 
 /**
- * Long-term notes, in their own table: `GUILD#<guild>` / `NOTE#<id>`. A guild holds at most a
+ * Long-term notes, in their own table: `GUILD#<guild>` / `NOTE#<id>`, numbered per guild by the
+ * `COUNTER` / `NOTE#<guild>` counter. A guild holds at most a
  * few dozen notes per person, so listing and keyword search read the guild's notes and sort or rank
  * them in code.
  */
@@ -15,10 +16,9 @@ export class DynamoMemoryRepository implements MemoryRepository {
   ) {}
 
   async add(memory: NewMemory): Promise<Memory> {
-    const id = await nextId(this.doc, this.table, `note#${memory.guildId}`);
-    const stored: Memory = { ...memory, id, updatedAt: memory.createdAt };
-    await this.doc.send(new PutCommand({ TableName: this.table, Item: { ...key(memory.guildId, id), ...stored } }));
-    return stored;
+    const stored = (id: number): Memory => ({ ...memory, id, updatedAt: memory.createdAt });
+    const id = await putWithNewId(this.doc, this.table, `NOTE#${memory.guildId}`, (id) => ({ ...key(memory.guildId, id), ...stored(id) }));
+    return stored(id);
   }
 
   async get(guildId: string, id: number): Promise<Memory | undefined> {

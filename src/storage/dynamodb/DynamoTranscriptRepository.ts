@@ -11,13 +11,14 @@ import type {
   VoiceSessionSummary,
 } from '../ports.js';
 import { queryTerms, rankByRelevance } from '../search/textSearch.js';
-import { MAX_KEY_NUMBER, expiryAfter, isConflict, names, nextId, pad, queryAll, queryUntil, type Item } from './dynamo.js';
+import { MAX_KEY_NUMBER, expiryAfter, isConflict, names, pad, putWithNewId, queryAll, queryUntil, type Item } from './dynamo.js';
 import { GSI1, GSI2 } from './schema.js';
 
 const META = 'META';
 const SEGMENT = 'SEG#';
-const STATUS_OPEN = 'SESSION_STATUS#open';
-const STATUS_UNRECAPPED = 'SESSION_STATUS#unrecapped';
+const STATUS_OPEN = 'SESSION_STATUS#OPEN';
+const STATUS_UNRECAPPED = 'SESSION_STATUS#UNRECAPPED';
+const COUNTER = 'SESSION';
 
 /**
  * Voice sessions and their transcript lines. A session is a META item under `SESSION#<id>` with
@@ -34,27 +35,21 @@ export class DynamoTranscriptRepository implements TranscriptRepository {
   ) {}
 
   async startSession(input: Omit<VoiceSessionRecord, 'id' | 'endedAt'>): Promise<VoiceSessionRecord> {
-    const id = await nextId(this.doc, this.table, 'session');
-    await this.doc.send(
-      new PutCommand({
-        TableName: this.table,
-        Item: {
-          pk: sessionKey(id),
-          sk: META,
-          id,
-          guildId: input.guildId,
-          channelId: input.channelId,
-          channelName: input.channelName,
-          startedAt: input.startedAt,
-          segmentCount: 0,
-          nextSegment: 0,
-          gsi1pk: guildKey(input.guildId),
-          gsi1sk: `SESSION#${pad(input.startedAt)}#${pad(id)}`,
-          gsi2pk: STATUS_OPEN,
-          gsi2sk: `${pad(input.startedAt)}#${pad(id)}`,
-        },
-      }),
-    );
+    const id = await putWithNewId(this.doc, this.table, COUNTER, (id) => ({
+      pk: sessionKey(id),
+      sk: META,
+      id,
+      guildId: input.guildId,
+      channelId: input.channelId,
+      channelName: input.channelName,
+      startedAt: input.startedAt,
+      segmentCount: 0,
+      nextSegment: 0,
+      gsi1pk: guildKey(input.guildId),
+      gsi1sk: `SESSION#${pad(input.startedAt)}#${pad(id)}`,
+      gsi2pk: STATUS_OPEN,
+      gsi2sk: `${pad(input.startedAt)}#${pad(id)}`,
+    }));
     return { ...input, id, endedAt: null };
   }
 
