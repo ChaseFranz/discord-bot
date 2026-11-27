@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  bot:
+    name: Bot (type-check, tests, build)
+    runs-on: ubuntu-latest
+    services:
+      # The storage tests run against SQLite and DynamoDB.
+      dynamodb:
+        image: amazon/dynamodb-local:latest
+        ports:
+          - 8000:8000
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24.15'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+        env:
+          DYNAMODB_ENDPOINT: http://localhost:8000
+      - run: npx tsc -p tsconfig.json
+
+  infra:
+    name: Infrastructure (type-check, tests, synth)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24.15'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            infra/package-lock.json
+      # The Lambda bundles are built from the bot's sources and dependencies.
+      - run: npm ci
+      - run: npm ci
+        working-directory: infra
+      - run: npx tsc --noEmit && npm test
+        working-directory: infra
+      - name: Synthesize with placeholder settings
+        working-directory: infra
+        run: >-
+          npx cdk synth --quiet
+          -c clientId=100000000000000001 -c guildId=100000000000000002
+          -c publicKey=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          -c timeZone=UTC -c claudeProvider=anthropic

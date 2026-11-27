@@ -1,184 +1,339 @@
-# Discord ChatGPT Bot
-A feature-rich Discord bot that integrates ChatGPT for both conversational and creative interactions. Built with Node.js, discord.js, and OpenAI's GPT-3.5-turbo model, the bot now includes voice integration, dynamic language support, and enhanced customization options – all wrapped in a modular, scalable architecture.
+# Nimbus
 
-## Features
+Nimbus is an Alexa-style assistant for your Discord voice calls, powered by Claude. It sits in a voice channel, follows the conversation, and answers whoever says its name ("Nimbus, …"). It keeps a separate conversation with each person, and it can look back over what the whole group said. You can also type to it with `/chat` or by @mentioning it. Your typed and spoken conversation is one thread, so it remembers both.
 
-- **Text Interaction:**  
-  Chat with ChatGPT using slash commands (e.g., `/chat`) that maintain conversation history and support custom parameters.
+- **Claude** handles the thinking: Claude Opus 5.5 for typed replies, Claude Haiku 5.5 for spoken replies, which need to be fast. Both can be changed in `.env`. It's reached through **Claude Platform on AWS**, so requests use your AWS credentials and show up on your AWS bill.
+- **AWS Transcribe** turns speech into text (streamed while people are still talking), and **AWS Polly** speaks the replies, sentence by sentence as Claude writes them.
+- **Conversations feel natural**: after Nimbus answers, you can keep talking for a few seconds without saying its name, and "Nimbus, stop" cuts it off instantly.
+- An **MCP memory server** gives Claude tools to search and read past voice conversations, short recaps of past calls, and each person's own history. Old context is fetched when it's needed instead of always being stuffed into the prompt.
+- **Reminders and timers**, said out loud in the call or posted as a mention ("Nimbus, remind us at 9 to start the raid").
+- **Music** from YouTube, by slash command or by voice ("Nimbus, play some lo-fi"). Music pauses while the assistant talks.
+- **Web search** for anything recent (news, scores, prices, weather).
+- **Privacy and cost controls**: everyone chooses what gets transcribed with `/privacy`, and a daily spending cap (default $5) with `/usage` keeps the bill predictable.
 
-- **Voice Interaction:**  
-  Enable hands-free control with voice commands. The bot supports speech-to-text transcription and text-to-speech responses via integrated voice libraries.
+## How it works
 
-- **Customization:**  
-  Adjust response parameters like temperature and conversational style using the `/customize` command.
+```text
+voice channel ─► each person's audio ─► AWS Transcribe ─► transcript line ─► SQLite (ambient transcript)
+   (skipped for people who opted out)                           │
+                                         says "Nimbus", or a follow-up right after a reply?
+                                                                │ yes ("stop" is handled right here)
+                                                                ▼
+   last few minutes of the call ─┐
+   that person's thread ─────────┼─► Claude (Haiku) ◄─► tools: memory (MCP), music, reminders,
+   situation note ───────────────┘          │                  stop_speaking, web search
+                                            ▼ streamed, one sentence at a time
+                              AWS Polly ─► spoken in the channel ─► also saved to the transcript
+```
 
-- **Multi-Language Support:**  
-  Switch system language on the fly using `/setlanguage`.
+When a call ends, Claude Haiku writes a short private recap of it, which Nimbus can consult later.
 
-- **Context Menu Commands:**  
-  - **Describe This User:** Right-click on a user to receive a creative profile description.  
-  - **Summarize This Message:** Right-click on a message to generate a one-sentence summary.
+### Memory
 
-- **Enhanced Help:**  
-  A dynamic `/help` command lists all commands and usage examples.
+There are four kinds, all stored locally with SQLite:
 
-- **Modular Structure:**  
-  Commands and event handlers are organized into separate modules for easy maintenance and scalability.
+1. **Each person's thread** with the assistant (`data/bot.db`): typed and spoken turns, with tool calls. The most recent stretch is sent with every request. Older turns move out of view but stay stored and searchable. Images people attach are seen with that message only; the thread keeps a placeholder.
+2. **The ambient transcript** (`data/bot.db`): everything said in a voice channel while the bot is listening, including its own spoken replies, grouped into sessions.
+3. **Call recaps** (`data/bot.db`): when a call ends, Claude Haiku summarises it in about 120 words (who was there, topics, decisions and who said they'd do what). Recaps are for Nimbus's own use and aren't posted anywhere. Calls shorter than six lines aren't recapped. If the bot stops before writing one, it catches up on the next start.
+4. **Long-term notes about people** (`data/memories.db`, a separate database): short facts Nimbus saves when someone tells it something worth remembering, such as "Is vegetarian" or "Birthday: May 3", plus a few facts about the server itself.
 
-## Project Structure
+With each spoken request, Claude sees the last few minutes of the call (`AMBIENT_CONTEXT_MINUTES`, default 3). Anything older it looks up with the memory tools when someone refers back to it:
 
-- `commands/` – Contains all the slash and context menu commands.
-- `events/` – Houses event listeners.
-- `dist/` – Compiled JavaScript output.
-- Other configuration and utility files.
+| Tool | Used for |
+| --- | --- |
+| `search_voice_transcripts` | "What did Sam say about the trip?": keyword search with speaker/time filters, returns matches with surrounding lines |
+| `read_voice_transcript` | "Sum up last night": reads a session or time range in order, with paging |
+| `list_voice_sessions` | Lists past calls with their recaps, which often answer "what did we talk about yesterday?" on their own |
+| `search_my_conversation_history` | "Like I told you last week…": the person's *own* older history only |
+| `remember`, `update_memory`, `forget_memory` | Save, correct or delete a long-term note about someone (or the server) |
+| `search_memories` | Notes about people who aren't in the conversation ("what's Sam's favourite game?") |
 
-## Installation
+**Long-term notes.** Nimbus saves a note when someone tells it something lasting, but only from things said to it directly, never from chatter it overhears. It won't save secrets, and only saves sensitive details if asked to. Notes about whoever is talking, anyone else in the call, and the server are attached to each message as information (not instructions), so there's no extra lookup before replying. Notes are shared across the server: Nimbus can use what it knows about Sam when Alex asks. Only the person a note is about, or whoever gave it, can change or delete it. Everyone can see and delete what Nimbus remembers about them with `/memories`. Notes don't expire.
 
-1. **Clone the Repository:**
+**Why keyword search instead of embeddings (for now).** The memory server uses SQLite FTS5 with BM25 ranking and stemming. Search is free and instant, and adds no extra vendor or model download. A Discord group's transcripts are small (thousands of lines, not millions), and Claude is good at writing several targeted keyword queries, adding speaker and time filters, and trying synonyms when a search misses. If paraphrase misses turn out to matter in practice ("vacation" vs "trip to Japan"), semantic search slots in behind the same `search_voice_transcripts` tool. Add an embedding model (Voyage AI, a local model, or Bedrock Titan on AWS), store vectors (`sqlite-vec` locally, pgvector or OpenSearch on AWS), and merge the two rankings. The assistant's prompts and tools don't change.
 
-    ```bash
-    git clone https://github.com/yourusername/discord-bot.git
-    cd discord-bot
-    ```
+**Scoping and privacy.** The memory tools always run scoped to the server, and the personal-history tool to the person speaking. The bot fills those parameters in itself, so a conversation can't read another server's transcripts or another person's thread. `/join` announces that the channel is being transcribed. Transcripts, their recaps, out-of-view conversation turns and finished reminders are deleted after `MEMORY_RETENTION_DAYS` (default 30; `0` keeps everything). `/reset` deletes your whole thread.
 
-2. **Install Dependencies:**
+**Choosing what gets transcribed.** Each person picks one of three levels with `/privacy`, and it takes effect immediately, even mid-sentence:
 
-    Ensure you have [Node.js](https://nodejs.org/en) installed, then run:
+| Level | What happens |
+| --- | --- |
+| Everything I say (default) | Everything is transcribed and kept, so Nimbus can follow the conversation. |
+| Only what I say to the assistant | Only lines with its name, and follow-ups right after it answers you, are kept. Everything else is dropped as soon as it's transcribed, and never stored or logged. Your audio still goes to Transcribe, because that's how Nimbus hears its name. |
+| Nothing | Your audio is never captured or sent anywhere. You can't talk to Nimbus by voice, but `/chat` and @mentions still work. |
 
-    ```bash
-    npm install
-    ```
+The choice applies from then on; it doesn't delete lines already transcribed (retention does that).
 
-3. **Configure the Bot:**
+### Prompt caching and history
 
-    Create a [.env](http://_vscodecontentref_/0) file in the root directory with your credentials and configuration options. For example:
+The system prompt and tool list never change while the bot runs, so they're cached. Each person's history is only ever appended to. Per-request details (time, who's speaking, music status, style) go in a short system message after the newest turn, so they don't break the cache. Thinking blocks are not stored, because the same thread is answered by different models (Opus for text, Haiku for voice) and thinking blocks are tied to the model and conversation that produced them. Stripping them once, when the turn is stored, keeps every later request valid and byte-identical. Set `LOG_LEVEL=debug` to see `cache_read` / `cache_write` token counts per request.
 
-    ```.env
-    OPENAI_API_KEY=YOUR_OPENAI_API_KEY_HERE
-    DISCORD_BOT_TOKEN=YOUR_DISCORD_BOT_TOKEN_HERE
-    CLIENT_ID=YOUR_DISCORD_APPLICATION_ID_HERE
-    GUILD_ID=YOUR_TEST_GUILD_ID_HERE
-    OPENAI_CHAT_MODEL=gpt-3.5-turbo
-    OPENAI_VOICE_MODEL=gpt-4o-mini
+## Setup
 
-    # AWS configuration (if using AWS services)
-    AWS_ACCESS_KEY_ID=YOUR_ACCESS_KEY
-    AWS_SECRET_ACCESS_KEY=YOUR_SECRET_KEY
-    AWS_REGION=YOUR_AWS_REGION
-    ```
+### 1. Prerequisites
 
-    Make sure to load these configurations in your application (e.g., using the `dotenv` package):
+- **Node.js 24.15+** (the built-in `node:sqlite` and the YouTube library need it)
+- **ffmpeg** on your `PATH` (decodes music and speech audio)
+- **Build tools** may be needed for `@discordjs/opus` if no prebuilt binary matches your platform
 
-    ```js
-    // filepath: /c:/Users/Chase/discord-bot/index.js
-    require('dotenv').config();
-    // ...existing code...
-    ```
+### 2. Discord application
 
-4. **Configure TypeScript:**
+1. Create an application at <https://discord.com/developers/applications>, add a **Bot**, and copy its token.
+2. No privileged intents are needed. Discord delivers the text of messages that mention a bot without the Message Content intent, and that's all @mention chat reads.
+3. Invite it with the `bot` and `applications.commands` scopes and these permissions: **View Channels, Send Messages, Send Messages in Threads, Read Message History, Embed Links, Connect, Speak, Use Voice Activity**. (Read Message History lets it reply to the message that mentioned it. If you invited the bot before @mention chat existed, add the two new permissions to its role in Server Settings.)
+4. Copy the **Application ID** (`CLIENT_ID`) and your **server ID** (`GUILD_ID`). Commands are registered to that server, so they appear immediately.
 
-    A [tsconfig.json](http://_vscodecontentref_/1) file is provided to compile both `.ts` and `.js` files. Adjust compiler options as required.
+### 3. Claude Platform on AWS
 
-## Building and Running
+By default the bot reaches Claude through **Claude Platform on AWS**: Anthropic's Claude API, signed with your AWS credentials (the same identity Transcribe and Polly use) and billed on your AWS bill through AWS Marketplace. One-time setup:
 
-1. **Build the Project:**
+1. In the AWS Console, open the **Claude Platform on AWS** service page and click **Sign up**. This creates a new Anthropic organization tied to your AWS account, separate from any existing Anthropic account.
+2. Follow the emailed setup link to fill in the organization details.
+3. Create a workspace in the region you'll use, and copy its ID (`wrkspc_…`) into `ANTHROPIC_AWS_WORKSPACE_ID`. Each workspace is bound to one region; if yours isn't `AWS_REGION`, also set `CLAUDE_AWS_REGION`.
+4. Once per AWS account, enable the identity federation the gateway relies on. Without it, every request fails with "Outbound web identity federation is disabled".
 
-    Compile the TypeScript files into JavaScript by running:
+   ```bash
+   aws iam enable-outbound-web-identity-federation
+   ```
 
-    ```bash
-    npm run build
-    ```
+New organizations start on the lowest rate-limit tier; you can request higher limits in the Claude Console. At startup the bot checks the workspace, permissions and both model IDs, and exits with a checklist if anything is wrong.
 
-    This outputs the compiled files into the [dist](http://_vscodecontentref_/2) directory.
+To use the Claude API directly instead, set `CLAUDE_PROVIDER=anthropic` and `ANTHROPIC_API_KEY`.
 
-2. **Run the Bot:**
+### 4. AWS resources (CDK)
 
-    Start the bot with:
+Nimbus's AWS resources are defined with the AWS CDK in [infra/](infra/) and deployed as a CloudFormation stack named `Nimbus`. It creates:
 
-    ```bash
-    npm run start
-    ```
+- **`NimbusBot` managed policy**, from [infra/nimbus-bot-policy.json](infra/nimbus-bot-policy.json): Transcribe, Polly, Claude inference and model lookups in your Claude Platform on AWS workspaces, and the two `sts` actions the Claude Platform on AWS gateway uses to authenticate to Anthropic on your behalf.
+- **`nimbus-bot` IAM user** with only that policy, so the bot doesn't run on your admin credentials.
+- **An access key for that user**, stored in Secrets Manager as `nimbus/bot-access-key` (about $0.40 a month) and never shown in stack outputs.
 
-## Usage
+With an admin profile, from the repo root:
 
-### Chat Commands
+```bash
+cd infra && npm install
+npx cdk bootstrap --profile admin   # once per account and region
+npx cdk deploy --profile admin
+cd ..
+cp .env.example .env                # if you haven't already
+aws secretsmanager get-secret-value --secret-id nimbus/bot-access-key --query SecretString --output text --profile admin \
+  | node infra/scripts/write-bot-credentials.mjs   # writes the key into .env without printing it
+```
 
-- **Chat with ChatGPT:**  
-  Invoke `/chat` followed by your prompt.  
-  _Example:_  
-  `/chat Tell me a funny joke about cats.`
+To rotate the key, increase `accessKeySerial` in [infra/bin/nimbus.ts](infra/bin/nimbus.ts), deploy again, and re-run the last command. When the bot moves onto AWS compute, attach the same policy to that compute's role and remove the user and key. `cd infra && npm test` checks the stack's template.
 
-- **Customize Responses:**  
-  Use `/customize` to adjust response parameters.  
-  _Example:_  
-  `/customize temperature: 0.8 style: casual`
+To limit Claude access to one workspace, replace `workspace/*` in the policy with that workspace's ARN, `arn:aws:aws-external-anthropic:<region>:<account-id>:workspace/<workspace-id>`. With `CLAUDE_PROVIDER=anthropic`, only the first statement is needed.
 
-- **Voice Interaction:**  
-  If enabled, use voice commands to interact with the bot. Refer to the help docs or `/help` for usage details.
+Pick a region where your Polly voice supports your engine. The default, `Joanna` with `generative`, works in `us-east-1`. The bot checks this at startup.
 
-- **Set Language:**  
-  Switch system language via `/setlanguage`.  
-  _Example:_  
-  `/setlanguage language: es`
+### 5. Configure, build, run
 
-- **Reset Conversation:**  
-  Clear conversation history by using `/reset`.
+```bash
+npm install
+cp .env.example .env     # then fill it in; every setting is documented there
+npm run build            # runs the tests first
+npm start
+```
 
-- **Context Menu Commands:**  
-  - Right-click on a user and select "Describe This User" for a creative profile.  
-  - Right-click on a message and select "Summarize This Message" for a concise summary.
+### 6. Smoke test (optional, uses real APIs)
 
-- **Help:**  
-  Use `/help` to display all available commands with usage examples.
+Without Discord, this checks Claude through your configured provider and AWS (Polly speech, transcribed back by Transcribe). The Claude part covers the MCP memory tools, prompt caching, streamed spoken replies, reminders and a call recap, and prints what the run cost (about $0.08):
 
-### Music Commands
+```bash
+npm run smoke                 # both
+npm run smoke -- --claude     # Claude only
+npm run smoke -- --aws        # AWS only
+```
 
-- **Play:**
-  - Plays a song from YouTube. If there is no active music queue in the guild, the bot will join the user's voice channel and begin playback. Songs are added to a queue for continuous playback.  
-  _Example:_
-  `/play` url: https://www.youtube.com/watch?v=example`
+## Commands
 
-- **Skip:**
-  - Skips the currently playing song and advances to the next song in the queue.  
-  _Example:_
-  `skip`
+| Command | What it does |
+| --- | --- |
+| `/join` | Joins your voice channel and starts listening. Say the wake word ("Nimbus") to talk. |
+| `/leave` | Leaves the voice channel (and stops music). It also leaves by itself after `AUTO_LEAVE_MINUTES` (default 2) with nobody else in the channel. |
+| `/chat prompt:` | Type to the assistant; shares your conversation with voice. Up to 200 characters; @mention it for longer messages or images. |
+| @Nimbus *message* | Mention it (or reply to one of its messages) in any channel or thread. No length limit, and it can see attached images. |
+| `/privacy transcription:` | Choose what Nimbus transcribes when you talk (see Privacy above). Without an option, shows your current choice. |
+| `/usage` | Today's estimated spending against the daily budget, broken down by Claude model, web search, Transcribe and Polly, plus the last 7 days. |
+| `/customize style:` | Default, Casual, Formal, Humorous or Sarcastic, for text and voice. |
+| `/reset` | Deletes your conversation (asks for confirmation). Long-term notes stay; see `/memories`. |
+| `/memories` | Shows only you what Nimbus remembers about you, with options to forget one note or everything. |
+| `/play query:` | Plays a YouTube URL or search; queues if something is playing. |
+| `/skip` `/pause` `/resume` `/stop` `/queue` | Music controls. |
+| `/help` | Lists commands. |
 
-- **Stop:**
-  - Stops music playback, clears the music queue, and disconnects the bot from the voice channel.  
-  _Example:_
-  `stop`
+By voice: "Nimbus, play Bohemian Rhapsody", "Nimbus, skip this", "Nimbus, what did Alex say about the game?", "Nimbus, what's the weather tomorrow?", "Nimbus, remind me in 10 minutes to take the pizza out", "Nimbus, stop".
+
+### Talking to Nimbus
+
+- **The chime.** When Nimbus hears its name, it plays a short chime and pauses any music, so everyone knows it's thinking. The music comes back after the reply. Turn the chime off with `WAKE_SOUND_ENABLED=false`.
+- **Fast replies.** Nimbus starts speaking its first sentence while Claude is still writing the rest, and prepares each next sentence while the current one plays.
+- **Follow-ups.** For `FOLLOW_UP_SECONDS` (default 8) after Nimbus finishes answering you, you can carry on without its name ("and what about tomorrow?"). This only works for the person it just answered. If you were actually talking to someone else, Nimbus usually works that out and stays quiet. Set it to `0` to always require the name.
+- **Stop.** "Nimbus, stop" (or "never mind", "be quiet", "cancel"…) is handled on the spot, without asking Claude: it stops talking and drops any reply still being written. While it's answering you, plain "stop" works too. If it isn't talking, "Nimbus, stop" pauses the music; "Nimbus, resume" brings it back.
+
+### Reminders and timers
+
+Ask in any way: "Nimbus, set a timer for 10 minutes", "remind me at 9 to start the raid", "remind us every Friday at 8 to pick a movie", "what reminders do I have?", "cancel reminder 3". Repeats can be every N minutes (5 or more), hours, days, weeks, months or years, or on chosen weekdays. Times are in the server's `TIMEZONE`, and daily or longer repeats keep their local time across daylight saving changes.
+
+When one is due, Nimbus says it out loud if you're in a call with it. For "remind us", it says it to whoever is in the call. Otherwise it posts a mention in the channel where you set it; for one set by voice, that's the voice channel's chat. If it can't post there, it sends you a direct message. Each person can have 25 active reminders, and only the person who set one can cancel it.
+
+Reminders are stored in the database, so they survive restarts. **Running on your PC:** a scheduler inside the bot delivers them. A reminder due while the PC is off or asleep goes out as soon as the bot is running again, marked as late. A repeating one then skips ahead to its next future time instead of firing for every one it missed. **Running on AWS:** nothing runs between uses, so each reminder wakes a Lambda function just before it's due (through EventBridge Scheduler, or directly when it's minutes away). The Lambda waits for the exact second and then delivers it, so reminders are on time whether or not anyone is in a call.
+
+## Costs
+
+You pay each provider directly. Rough guide:
+
+- **Claude**: Opus 5.5 is $4 / $20 per million input/output tokens and Haiku 5.5 is $0.10 / $0.50 (prompts up to 100K tokens), with cache reads far cheaper than fresh input. Web search is $10 per 1,000 searches, capped at 5 per text turn and 2 per spoken turn. Turn it off with `WEB_SEARCH_ENABLED=false`. Through Claude Platform on AWS these same rates appear on your AWS bill, metered as Claude Consumption Units ($0.01 each). Call recaps use Haiku and cost a fraction of a cent each.
+- **AWS Transcribe streaming**: $0.0001667 per second of audio ($0.01 a minute) in us-east-1, with no per-request minimum. Every utterance in a listening channel is transcribed, because that's what builds the group memory; sounds under 0.4 s are ignored.
+- **AWS Polly**: billed per character spoken: $30 per million characters for generative voices, $16 neural, $4 standard.
+
+### Daily budget
+
+Nimbus meters every Claude request, web search, second of transcription and character of speech, prices them at the list prices above, and keeps a running total per day (in your `TIMEZONE`). `/usage` shows the breakdown. When a day's total reaches `DAILY_BUDGET_USD` (default $5), Nimbus says so once in the call, then stops listening and answering until midnight. Typed requests get a short "taking a break" reply. Music, reminders and the other slash commands keep working. Text replies get a note once 80% is used. Set `DAILY_BUDGET_USD=0` to track spending without a cap.
+
+The totals are estimates. A request in progress when the cap is reached finishes first. Your Anthropic or AWS bill is authoritative. If your region's Transcribe or Polly prices differ, set `TRANSCRIBE_USD_PER_MINUTE` and `POLLY_USD_PER_MILLION_CHARACTERS`.
+
+## Running on AWS
+
+Nimbus can also run in your AWS account, where it uses nothing between uses:
+
+```text
+slash command ─► Lambda "edge" (function URL) ─► answers "thinking…" within Discord's 3 seconds
+                       │ hands it on
+                       ▼
+               Lambda "worker" ─► text commands are answered here (Claude, DynamoDB)
+                       │ voice commands
+                       ▼
+     SQS queue ─► Fargate voice task: started by /join or /play, finishes ~2 minutes after the call
+reminder due ─► EventBridge Scheduler ─► Lambda "reminders" ─► said in the call, or posted as a mention
+```
+
+Compared with running on your PC:
+
+- **`/join` and `/play`** take about 30–60 seconds the first time, while the voice task starts. Nimbus replies "On my way…" right away.
+- **@mention chat** is off: it needs a connection that's always open. `/chat` works as usual.
+- **Data** is kept in two on-demand DynamoDB tables. Old transcripts and conversation turns expire by themselves (DynamoDB's TTL). Nothing is copied from your PC's SQLite files.
+- **Reminders** arrive on time even when nobody is in a call.
+
+It costs roughly **$5 a month** at about 3 hours of calls a day, on top of Claude, Transcribe and Polly usage. The voice task is about $0.025 an hour, plus a public IP while it runs. Lambda, SQS, EventBridge and DynamoDB stay within or near their free tiers at this size, and the two secrets are $0.80 a month. With `ALERT_EMAIL` set, an AWS Budgets alert emails you at 80% of `MONTHLY_BUDGET_USD` (default $25).
+
+### One-time setup
+
+1. Deploy the stack you only deploy by hand: GitHub's access to AWS and the two secrets. Then copy the secrets from `.env`:
+
+   ```bash
+   cd infra && npx cdk deploy NimbusDeploy --profile admin && cd ..
+   AWS_PROFILE=admin npm run aws:secrets   # DISCORD_BOT_TOKEN (and ANTHROPIC_API_KEY) from .env, never printed
+   ```
+
+   Note the `DeployRoleArn` it prints. If your account already has a GitHub OIDC provider, add `-c githubOidcProviderArn=<its ARN>`.
+2. In GitHub, open **Settings → Environments**, create `production`, add yourself as a **required reviewer**, and add these environment variables:
+
+   | Variable | Value |
+   | --- | --- |
+   | `AWS_DEPLOY_ROLE_ARN` | The `DeployRoleArn` from step 1 |
+   | `AWS_REGION` | `us-east-1` |
+   | `DISCORD_CLIENT_ID` | The Application ID |
+   | `DISCORD_GUILD_ID` | Your server ID |
+   | `DISCORD_PUBLIC_KEY` | Developer Portal → General Information → Public Key |
+   | `TIMEZONE` | Your time zone, e.g. `America/Chicago`. AWS runs in UTC otherwise, and reminders would be off. |
+   | `CLAUDE_PROVIDER` | `anthropic` for now (uses the API key from step 1). Change it to `aws` and add `ANTHROPIC_AWS_WORKSPACE_ID` once Claude Platform on AWS is set up. |
+   | `ALERT_EMAIL` | Optional: gets Lambda error alerts and the spending alert |
+   | `DAILY_BUDGET_USD`, `MONTHLY_BUDGET_USD` | Optional: the bot's daily cap (default $5) and the AWS Budgets alert (default $25) |
+
+3. Merge to `main` (or run the **Deploy** workflow by hand) and approve it. The first deploy takes about 10 minutes, mostly building the voice task image.
+4. Stop the bot on your PC, then send slash commands to AWS:
+
+   ```bash
+   AWS_PROFILE=admin npm run aws:on
+   ```
+
+### Switching between AWS and your PC
+
+Discord sends slash commands to one place only. `npm run aws:off` sends them back to a bot on your PC (start it with `npm start`), and `npm run aws:on` sends them to AWS again. Don't run both at once: either copy can join a call, so two could end up answering in the same one. Your PC keeps its own SQLite data, so what's said while testing locally doesn't reach AWS's memory.
+
+### CI and deploys
+
+- **Every push and pull request** (`.github/workflows/ci.yml`): type-check, tests against SQLite and DynamoDB Local, build, and the CDK tests and synth.
+- **Merging to `main`** (`.github/workflows/deploy.yml`): deploys the `NimbusCloud` stack once you approve it, then registers the slash commands. GitHub signs in to AWS with OIDC, using a role that only this repository's `production` environment can assume, so no AWS keys are stored in GitHub.
+
+## Using the memory from other MCP clients
+
+The memory server is a normal MCP server. Run it standalone over stdio against the bot's database, for example from Claude Desktop or Claude Code:
+
+```json
+{
+  "mcpServers": {
+    "discord-memory": {
+      "command": "node",
+      "args": ["/path/to/discord-bot/dist/memory/stdio.js"],
+      "env": {
+        "DATABASE_PATH": "/path/to/discord-bot/data/bot.db",
+        "MEMORY_DATABASE_PATH": "/path/to/discord-bot/data/memories.db"
+      }
+    }
+  }
+}
+```
+
+In this mode `guild_id` and `user_id` are ordinary tool arguments.
+
+## Architecture
+
+Everything external sits behind a small interface (a "port"). The programs that pick implementations are `src/app.ts` (the PC) and `src/aws/` (AWS), sharing their wiring through `src/runtime/`:
+
+| Port | On your PC | On AWS |
+| --- | --- | --- |
+| `ConversationRepository`, `TranscriptRepository`, `SettingsRepository`, `MemoryRepository`, `ReminderRepository`, `UsageRepository` (`src/storage/ports.ts`) | SQLite (`src/storage/sqlite/`), with notes in their own `memories.db` | DynamoDB (`src/storage/dynamodb/`), with notes in their own table; keyword search ranked in code (`src/storage/search/`) |
+| Slash commands (`CommandContext` in `src/discord/context.ts`) | The live Gateway connection (discord.js) | HTTPS interactions to Lambda, answered through the REST API |
+| `ReminderAlarm` (`src/reminders/alarm.ts`) | The in-process scheduler | EventBridge Scheduler waking a Lambda |
+| Calls (`src/calls/voiceTask.ts`) | Handled in the one process | An on-demand Fargate task, given orders through SQS, with a status record in DynamoDB |
+| `SpeechToText` (`src/speech/ports.ts`) | AWS Transcribe streaming | same |
+| `TextToSpeech` | AWS Polly | same |
+| `TrackSource` (`src/music/types.ts`) | YouTube (`@distube/ytdl-core`) | same |
+| Claude access (`src/claude/client.ts`) | Claude Platform on AWS (`AnthropicAws`), or the Claude API directly | same, through IAM roles instead of access keys |
+| Memory tools | MCP server in-process (`src/memory/inProcess.ts`) | same |
+| `ToolProvider` (`src/assistant/tools/types.ts`) | native tools + MCP adapter | same |
+
+```text
+src/
+  app.ts                 the bot on a PC: builds and wires everything in one process
+  index.ts               entry point: config, logging, start/stop
+  runtime/               wiring shared by every program: core services and the call stack
+  aws/                   the AWS programs: edge, worker and reminder Lambdas, and the voice task
+  calls/                 the on-demand voice task: status record, orders queue, control, main loop
+  config/                environment validation (zod)
+  claude/                Claude client for the configured provider + startup check
+  assistant/             Claude agent loop, prompts, history sanitising, styles
+    tools/               tool registry, MCP adapter, music + voice tools
+  memory/                memory MCP server (+ standalone stdio entry)
+  reminders/             reminder tools, repeat rules, scheduler, delivery
+  recaps/                end-of-call recaps
+  usage/                 price list, usage meter and daily budget
+  privacy/               per-person transcription choice
+  storage/               repository ports; SQLite and DynamoDB implementations; in-code search
+  speech/                STT/TTS ports + AWS adapters
+  voice/                 voice sessions, audio capture, speech queue, wake word, follow-ups and stop
+  music/                 queue service + YouTube source
+  discord/               client, command dispatch (Gateway and HTTPS), slash commands, @mention chat
+  scripts/               smoke test, command registration, switching between AWS and a PC
+infra/                   AWS CDK app: Nimbus (PC identity), NimbusDeploy (GitHub access, secrets),
+                         NimbusCloud (the bot on AWS)
+.github/workflows/       CI and deploys
+Dockerfile               the voice task's image
+test/                    unit and integration tests (jest)
+```
 
 ## Development
 
-- **Modular Loading:**  
-  Commands and event handlers are dynamically loaded from the `commands/` and `events/` directories.
+```bash
+npm test               # jest (ESM); storage tests run against SQLite
+npm run test:dynamodb  # the same, plus DynamoDB, against a DynamoDB Local on port 8000
+npm run typecheck      # strict TypeScript over src and tests
+npm run dev            # tsc --watch
+```
 
-- **Logging:**  
-  The project uses [Winston](https://www.npmjs.com/package/winston) for structured logging.
-
-- **User Customization:**  
-  In-memory storage is currently used for user settings (like temperature, style, and language). For larger deployments, consider integrating persistent storage.
-
-
-## Future Enhancements
-
-- **Analytics & Monitoring:**  
-  Integrate advanced monitoring services such as AWS CloudWatch for usage analytics.
-
-- **Persistent Storage:**  
-  Implement a database layer to store conversation history and user settings across sessions.
-
-- **Additional Customization:**  
-  Further refine interactions with additional customization options and NLP enhancements.
-
-- **Command integration with GPT**
-  It was my initial goal to build a generic integration between this GPT bot and other server bots through server bot registration and LLM _magic_. Sadly this isn't possible and violates discord TOS so instead I will have to include any useful bot commands for integration in this bot.
-
-  Goal #1 is a music player with voice and text prompting integration with GPT :D
-
-## Contributing
-
-Contributions are welcome! Please submit an issue or open a pull request for any improvements or new features.
+For `test:dynamodb`, start DynamoDB Local first, for example `docker run -p 8000:8000 amazon/dynamodb-local`. CI always runs it.
 
 ## License
 

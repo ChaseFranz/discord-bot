@@ -1,0 +1,31 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["transcribe:StartStreamTranscription", "polly:SynthesizeSpeech", "polly:DescribeVoices"],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["aws-external-anthropic:CreateInference", "aws-external-anthropic:GetModel"],
+      "Resource": "arn:aws:aws-external-anthropic:*:*:workspace/*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "sts:TagGetWebIdentityToken",
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "sts:GetWebIdentityToken",
+      "Resource": "*",
+      "Condition": {
+        "ForAnyValue:StringEquals": {
+          "sts:IdentityTokenAudience": ["https://api.anthropic.com", "https://platform.claude.com"]
+        },
+        "StringEquals": { "aws:CalledViaLast": "aws-external-anthropic.amazonaws.com" }
+      }
+    }
+  ]
+}

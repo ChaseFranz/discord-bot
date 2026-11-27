@@ -1,0 +1,17 @@
+# Keep secrets, local data and build output out of the image (and the build context).
+.env
+.env.*
+!.env.example
+data/
+recordings/
+*.log
+node_modules/
+dist/
+.git/
+.github/
+infra/
+test/
+assets/
+*.mp3
+*.pcm
+*.wav
