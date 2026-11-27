@@ -20,6 +20,7 @@ import type { MusicOutput } from '../music/types.js';
 import type { SpeechToText, TextToSpeech } from '../speech/ports.js';
 import type { UsageMeter } from '../usage/UsageService.js';
 import type { Clock } from '../util/time.js';
+import { readAhead } from './audio.js';
 import { MusicArbiter, type PausablePlayer, type PlayerStatus } from './MusicArbiter.js';
 import { captureUtterance, type CaptureOptions, type CapturedUtterance } from './SpeechCapture.js';
 import { openReplySpeech, type ReplySpeech } from './ReplySpeech.js';
@@ -62,6 +63,17 @@ const SPEECH_TIMEOUT_MS = 2 * 60_000;
 const RECONNECT_GRACE_MS = 5_000;
 /** Polly accepts at most this many characters per request. */
 const MAX_SPEECH_CHARACTERS = 3_000;
+/**
+ * How much of a piece of speech has to be in hand before it starts playing: about a third of a
+ * second of it. It arrives several times faster than it plays, so that head start is enough to
+ * ride out the uneven way it comes in, and costs well under a tenth of a second.
+ */
+const SPEECH_HEAD_BYTES = 4_096;
+/**
+ * How long speech may run dry before the rest of that piece is given up on, in 20 ms frames (the
+ * player's default is five: fine for a file, too jumpy for audio still coming over the network).
+ */
+const SPEECH_MAX_MISSED_FRAMES = 50;
 
 /**
  * One guild's voice connection: speech in (per-person utterance capture), the assistant's audio out
@@ -99,7 +111,7 @@ export class VoiceSession {
     this.currentChannel = channel;
     // Pause (don't keep consuming the stream) when no connection is listening to this player.
     this.musicPlayer = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Pause } });
-    this.speechPlayer = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Pause } });
+    this.speechPlayer = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Pause, maxMissedFrames: SPEECH_MAX_MISSED_FRAMES } });
     this.musicPlayer.on('error', (error) => deps.logger.warn(`Music player error: ${describeError(error)}`));
     this.speechPlayer.on('error', (error) => deps.logger.warn(`Speech player error: ${describeError(error)}`));
     this.arbiter = new MusicArbiter(pausable(this.musicPlayer));
@@ -384,9 +396,12 @@ export class VoiceSession {
     const input = text.slice(0, MAX_SPEECH_CHARACTERS);
     this.deps.meter.recordSpeech(this.guildId, input.length);
     const speech = await this.deps.tts.synthesize(input);
+    // It is played while the rest of it is still arriving (see readAhead).
+    const audio = await readAhead(speech.audio, SPEECH_HEAD_BYTES);
     return {
-      toResource: () => createAudioResource(speech.audio, { inputType: StreamType.Arbitrary }),
-      discard: () => speech.audio.destroy(),
+      // Opus as Discord wants it goes out untouched; anything else is decoded and re-encoded.
+      toResource: () => createAudioResource(audio, { inputType: speech.format === 'ogg_opus' ? StreamType.OggOpus : StreamType.Arbitrary }),
+      discard: () => audio.destroy(),
     };
   }
 

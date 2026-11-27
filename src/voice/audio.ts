@@ -1,4 +1,4 @@
-import { Transform, type TransformCallback } from 'node:stream';
+import { PassThrough, Transform, pipeline, type Readable, type TransformCallback } from 'node:stream';
 
 /** Discord voice audio decodes to 48 kHz, 16-bit, stereo PCM. */
 export const DISCORD_SAMPLE_RATE = 48_000;
@@ -39,6 +39,47 @@ export class StereoToMono extends Transform {
  * Regroups a byte stream into chunks of exactly `size` bytes (the last may be shorter).
  * Streaming STT services prefer steady ~100 ms frames over Discord's 20 ms packets.
  */
+/** More than any one piece of speech comes to: what readAhead will hold without slowing its source. */
+const READ_AHEAD_LIMIT_BYTES = 32 * 1024 * 1024;
+
+/**
+ * Makes audio that is still arriving over the network safe to play as it comes.
+ *
+ * Resolves once `headBytes` of it are in hand (or all of it, if there is less), so playback does
+ * not start on a trickle and stumble over the first hiccup. From then on everything that arrives
+ * is kept in memory straight away: audio is played in real time, and a piece may wait seconds for
+ * its turn, and neither should hold up whoever is sending it.
+ *
+ * Rejects if the source fails before that. If it fails later, the returned stream fails with it.
+ * Destroying the returned stream stops the source.
+ */
+export function readAhead(source: Readable, headBytes: number): Promise<Readable> {
+  const held = new PassThrough({ highWaterMark: READ_AHEAD_LIMIT_BYTES });
+  // A failure after playback was abandoned has nobody left to tell.
+  held.on('error', () => undefined);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let received = 0;
+    const ready = () => {
+      if (settled) return;
+      settled = true;
+      resolve(held);
+    };
+    source.on('data', (chunk: Buffer) => {
+      received += chunk.length;
+      if (received >= headBytes) ready();
+    });
+    pipeline(source, held, (error) => {
+      if (error && !settled) {
+        settled = true;
+        reject(error);
+      } else {
+        ready();
+      }
+    });
+  });
+}
+
 export async function* rechunk(source: AsyncIterable<Buffer>, size: number): AsyncGenerator<Buffer> {
   if (size <= 0) throw new RangeError('size must be positive');
   let pending: Buffer[] = [];

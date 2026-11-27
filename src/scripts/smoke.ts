@@ -256,10 +256,18 @@ async function smokeAws(): Promise<void> {
   const sentence = `Hey ${config.assistant.name}, play some jazz in the living room.`;
 
   const tts = new PollyTextToSpeech({ region: config.aws.region, voiceId: config.aws.pollyVoiceId, engine: config.aws.pollyEngine });
-  const mp3 = await tts.synthesize(sentence);
-  let mp3Bytes = 0;
-  for await (const chunk of mp3.audio) mp3Bytes += (chunk as Buffer).length;
-  logger.info(`Polly (${config.aws.pollyEngine}/${config.aws.pollyVoiceId}) synthesised ${mp3Bytes} bytes of MP3.`);
+  const asked = Date.now();
+  const speech = await tts.synthesize(sentence);
+  let speechBytes = 0;
+  let firstAudioMs: number | undefined;
+  for await (const chunk of speech.audio) {
+    firstAudioMs ??= Date.now() - asked;
+    speechBytes += (chunk as Buffer).length;
+  }
+  logger.info(
+    `Polly (${config.aws.pollyEngine}/${config.aws.pollyVoiceId}) synthesised ${speechBytes} bytes of ${speech.format}: ` +
+      `the first of it after ${firstAudioMs ?? '?'} ms, all of it after ${Date.now() - asked} ms.`,
+  );
 
   // Round trip: Polly PCM (16 kHz mono) -> Transcribe streaming.
   const polly = new PollyClient({ region: config.aws.region });

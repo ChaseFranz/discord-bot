@@ -108,8 +108,11 @@ describe('captureUtterance', () => {
   });
 
   describe('while someone is still talking', () => {
-    /** A receiver that hands over a packet every few milliseconds, as a person talking does (only faster). */
-    const talking = (packets: Buffer[], everyMs = 5) =>
+    /**
+     * A receiver that hands over a packet every few milliseconds, as a person talking does (only
+     * faster), and ends `quietMs` after the last one, as Discord's does once they have gone quiet.
+     */
+    const talking = (packets: Buffer[], everyMs = 5, quietMs = 0) =>
       ({
         subscribe: (userId: string, options: unknown) => {
           subscriptions.push({ userId, options });
@@ -118,7 +121,7 @@ describe('captureUtterance', () => {
           const push = stream.push.bind(stream);
           const timer = setInterval(() => {
             if (index < packets.length) push(packets[index++]);
-            else stream.push(null);
+            else if (index++ >= packets.length + quietMs / everyMs) stream.push(null);
           }, everyMs);
           // Ended from outside (the capture stops listening) or by running out: either way, no more packets.
           stream.push = (chunk: unknown) => {
@@ -142,9 +145,9 @@ describe('captureUtterance', () => {
       };
       return { heard, speechToText };
     };
-    const listen = (packets: Buffer[], speechToText: SpeechToText, extra: Partial<CaptureContext>) =>
+    const listen = (packets: Buffer[], speechToText: SpeechToText, extra: Partial<CaptureContext> & { quietMs?: number }) =>
       captureUtterance({
-        receiver: talking(packets),
+        receiver: talking(packets, 5, extra.quietMs),
         userId: 'u-alice',
         stt: speechToText,
         options: DEFAULT_CAPTURE_OPTIONS,
@@ -183,6 +186,16 @@ describe('captureUtterance', () => {
       const utterance = await listen(EIGHT_SECONDS, speechToText, { stillAllowed: () => false, recheckMs: 10 });
       expect(utterance).toBeNull();
       expect(heard.bytes).toBe(0);
+    }, 10_000);
+
+    it('times the end of their speech by when their last audio arrived, not by when the silence had been waited out', async () => {
+      // 1.26 seconds of audio: the last 60 ms are only passed on once the stream has ended.
+      const { speechToText } = counting('Nimbus, hello.');
+      const utterance = await listen(opusPackets(63), speechToText, { quietMs: 300 });
+      expect(utterance).toMatchObject({ text: 'Nimbus, hello.' });
+      const quiet = utterance!.endedAt - utterance!.lastAudioAt;
+      expect(quiet).toBeGreaterThanOrEqual(250);
+      expect(quiet).toBeLessThan(1_000);
     }, 10_000);
 
     it('keeps listening while the answer is yes, and when it cannot ask', async () => {

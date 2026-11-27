@@ -12,7 +12,11 @@ export interface PollyOptions {
 /** Polly accepts up to 3,000 billed characters of plain text per request. */
 const MAX_POLLY_CHARACTERS = 3_000;
 
-/** Text-to-speech with Amazon Polly, returning MP3 that the voice player transcodes. */
+/**
+ * Text-to-speech with Amazon Polly. The audio is asked for as Opus at 48 kHz, which Discord plays
+ * without any conversion, and is handed over while Polly is still producing it: for a sentence of
+ * four seconds that is about a third of a second after asking, not most of a second.
+ */
 export class PollyTextToSpeech implements TextToSpeech {
   private readonly client: PollyClient;
 
@@ -38,14 +42,17 @@ export class PollyTextToSpeech implements TextToSpeech {
       new SynthesizeSpeechCommand({
         Text: text.slice(0, MAX_POLLY_CHARACTERS),
         TextType: 'text',
-        OutputFormat: 'mp3',
+        OutputFormat: 'ogg_opus',
+        SampleRate: '48000',
         VoiceId: this.options.voiceId as VoiceId,
         Engine: this.options.engine as Engine,
       }),
       { abortSignal: signal },
     );
-    if (!response.AudioStream) throw new Error('Polly returned no audio');
-    const bytes = await response.AudioStream.transformToByteArray();
-    return { audio: Readable.from([Buffer.from(bytes)]), format: 'mp3' };
+    const stream = response.AudioStream;
+    if (!stream) throw new Error('Polly returned no audio');
+    // In Node the body is a stream that is still arriving. (Anywhere it isn't, take it whole.)
+    const audio = stream instanceof Readable ? stream : Readable.from([Buffer.from(await stream.transformToByteArray())]);
+    return { audio, format: 'ogg_opus' };
   }
 }
