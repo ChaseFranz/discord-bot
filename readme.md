@@ -74,7 +74,7 @@ The system prompt and tool list never change while the bot runs, so they're cach
 ### 1. Prerequisites
 
 - **Node.js 24.15+** (for the built-in `node:sqlite`; yt-dlp also uses it to read YouTube's player)
-- **ffmpeg** on your `PATH` (decodes music and speech audio)
+- **ffmpeg** on your `PATH` (decodes music)
 - **yt-dlp** on your `PATH` for music, or set `YT_DLP_PATH`. Use a current release from <https://github.com/yt-dlp/yt-dlp/releases> (the standalone `yt-dlp_linux`, `yt-dlp_macos` or `yt-dlp.exe`); distribution packages are usually too old to keep up with YouTube. When music stops playing after YouTube changes something, a newer yt-dlp usually fixes it.
 - **Build tools** may be needed for `@discordjs/opus` if no prebuilt binary matches your platform
 

@@ -27,13 +27,20 @@ export interface SpeechToText {
 }
 
 export interface SynthesizedSpeech {
-  /** Encoded audio (any container/codec ffmpeg can read). */
+  /**
+   * The audio. It may still be arriving: implementations hand it over as soon as the first of it
+   * is there, so it can start playing while the rest is synthesised.
+   */
   audio: Readable;
-  /** Container/codec of `audio`, e.g. 'mp3'. */
-  format: 'mp3' | 'ogg_vorbis' | 'pcm';
+  /**
+   * Container/codec of `audio`. 'ogg_opus' means Ogg-wrapped Opus at 48 kHz in 20 ms packets,
+   * which is what Discord plays: it is passed on as it is. Anything else is decoded with ffmpeg.
+   */
+  format: 'ogg_opus' | 'mp3' | 'ogg_vorbis' | 'pcm';
 }
 
 /** Text-to-speech port. Implementations: AWS Polly (today). */
 export interface TextToSpeech {
+  /** Resolves once audio has started to arrive (see SynthesizedSpeech.audio). */
   synthesize(text: string, signal?: AbortSignal): Promise<SynthesizedSpeech>;
 }

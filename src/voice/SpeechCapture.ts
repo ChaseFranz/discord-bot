@@ -107,13 +107,17 @@ export async function captureUtterance(context: CaptureContext): Promise<Capture
     logger.debug(`Audio pipeline for ${userId} ended with an error: ${describeError(error)}`);
     mono.end();
   });
+  // When the last of their audio arrived. (Not when it was passed on: the tail of an utterance is
+  // only passed on once the silence after it has been waited out.)
+  let lastAudioAt = startedAt;
+  opus.on('data', () => {
+    lastAudioAt = clock();
+  });
 
   let bytesSent = 0;
   let bytesHeard = 0;
-  let lastAudioAt = startedAt;
   const heard = (chunk: Buffer) => {
     bytesHeard += chunk.length;
-    lastAudioAt = clock();
     context.onAudio?.((bytesHeard / BYTES_PER_SECOND) * 1000);
   };
   try {

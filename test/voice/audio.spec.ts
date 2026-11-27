@@ -1,5 +1,6 @@
 import { Readable } from 'node:stream';
-import { StereoToMono, monoBytesFor, rechunk } from '../../src/voice/audio.js';
+import { finished } from 'node:stream/promises';
+import { StereoToMono, monoBytesFor, readAhead, rechunk } from '../../src/voice/audio.js';
 
 async function collect(stream: AsyncIterable<Buffer>): Promise<Buffer[]> {
   const out: Buffer[] = [];
@@ -40,5 +41,80 @@ describe('rechunk', () => {
 
   it('sizes 100 ms of 48 kHz mono 16-bit PCM', () => {
     expect(monoBytesFor(100)).toBe(9_600);
+  });
+});
+
+describe('readAhead (audio that is still arriving)', () => {
+  /** A source fed by hand, the way bytes come off the network. */
+  const arriving = () => {
+    const source = new Readable({ read: () => undefined });
+    return { source, send: (bytes: number) => source.push(Buffer.alloc(bytes, 7)), finish: () => source.push(null) };
+  };
+  const settled = async (promise: Promise<unknown>) => {
+    let done = false;
+    void promise.then(() => (done = true), () => (done = true));
+    await new Promise((resolve) => setImmediate(resolve));
+    return done;
+  };
+
+  it('is ready once the head of it is in hand, and plays the rest as it comes', async () => {
+    const { source, send, finish } = arriving();
+    const ready = readAhead(source, 1_000);
+    send(600);
+    expect(await settled(ready)).toBe(false);
+    send(600);
+    const audio = await ready;
+    // The rest arrives while it plays.
+    send(800);
+    finish();
+    expect(Buffer.concat(await collect(audio)).length).toBe(2_000);
+  });
+
+  it('is ready with all of it when there is less than a head', async () => {
+    const { source, send, finish } = arriving();
+    const ready = readAhead(source, 1_000);
+    send(300);
+    finish();
+    expect(Buffer.concat(await collect(await ready)).length).toBe(300);
+  });
+
+  it('takes everything in as it arrives, so a piece waiting its turn does not hold its source up', async () => {
+    const megabyte = Buffer.alloc(1024 * 1024, 7);
+    let sent = 0;
+    const source = new Readable({
+      read() {
+        // Sends only as fast as it is read from: this finishes only if nothing slows it down.
+        this.push(sent++ < 8 ? megabyte : null);
+      },
+    });
+    const audio = await readAhead(source, 1_000);
+    await finished(source);
+    // Nobody has read any of it yet, and all eight megabytes are there.
+    expect(audio.readableLength).toBe(8 * 1024 * 1024);
+    audio.destroy();
+  });
+
+  it('fails if the source fails before there is anything to play, and passes a later failure on', async () => {
+    const early = arriving();
+    const never = readAhead(early.source, 1_000);
+    early.send(100);
+    early.source.destroy(new Error('the connection dropped'));
+    await expect(never).rejects.toThrow('the connection dropped');
+
+    const late = arriving();
+    const ready = readAhead(late.source, 1_000);
+    late.send(1_500);
+    const audio = await ready;
+    late.source.destroy(new Error('the connection dropped'));
+    await expect(collect(audio)).rejects.toThrow('the connection dropped');
+  });
+
+  it('stops the source when what it returned is thrown away', async () => {
+    const { source, send } = arriving();
+    const ready = readAhead(source, 1_000);
+    send(1_500);
+    (await ready).destroy();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(source.destroyed).toBe(true);
   });
 });
