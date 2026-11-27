@@ -88,6 +88,30 @@ describe('the worker', () => {
     expect(replies).toEqual([{ content: 'did usage', allowed_mentions: { parse: [] } }]);
   });
 
+  it('says music is turned off without starting the voice task', async () => {
+    const replies: unknown[] = [];
+    const events: string[] = [];
+    const play: BotCommand = {
+      data: new SlashCommandBuilder().setName('play').setDescription('play'),
+      usage: '/play',
+      voice: 'starts-call',
+      feature: 'music',
+      execute: async () => void events.push('ran play'),
+    };
+    const worker = new InteractionWorker({
+      guildId: 'g',
+      applicationId: 'app',
+      rest: { get: async () => undefined, post: async (_route, body) => void replies.push(body), patch: async (_route, body) => void replies.push(body) },
+      dispatcher: new CommandDispatcher([play], [], { logger: silentLogger(), config: { music: { enabled: false } } } as unknown as AppServices),
+      control: { dispatch: async (cmd) => void events.push(`relayed ${cmd.data.name}`) },
+      usage: { refresh: async () => void events.push('refresh'), flush: async () => void events.push('flush') },
+      logger: silentLogger(),
+    });
+    await worker.handle(commandInteraction('play'));
+    expect(events).toEqual(['flush']);
+    expect(replies).toEqual([{ content: 'Music is turned off for now.', allowed_mentions: { parse: [] } }]);
+  });
+
   it('refuses other servers and unknown commands, and routes buttons', async () => {
     const { worker, replies, events } = setup();
     await worker.handle(commandInteraction('usage', 'elsewhere'));

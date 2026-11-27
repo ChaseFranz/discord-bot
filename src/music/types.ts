@@ -46,6 +46,9 @@ export interface MusicStatus {
   upcoming: Track[];
 }
 
+/** What people are told while MUSIC_ENABLED is off. */
+export const MUSIC_TURNED_OFF = 'Music is turned off for now.';
+
 /** An expected, user-facing failure such as "nothing is playing". */
 export class MusicError extends Error {
   override readonly name = 'MusicError';

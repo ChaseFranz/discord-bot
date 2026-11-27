@@ -42,6 +42,11 @@ export interface NimbusCloudStackProps extends StackProps {
   alertEmail?: string;
   /** AWS Budgets alert for the whole account, in USD per month. */
   monthlyBudgetUsd?: number;
+  /**
+   * Music from YouTube. Off by default: YouTube won't hand audio to AWS addresses ("Sign in to
+   * confirm you're not a bot"), so the music commands and Nimbus say music is turned off instead.
+   */
+  musicEnabled?: boolean;
   /** Other bot settings (the names in .env.example), e.g. { DAILY_BUDGET_USD: '5' }. */
   botSettings?: Record<string, string>;
   /** The repository root: the Dockerfile and the Lambda sources live there. */
@@ -106,6 +111,7 @@ export class NimbusCloudStack extends Stack {
     // Settings every bot process reads (see src/config/config.ts).
     const botEnvironment: Record<string, string> = {
       ...props.botSettings,
+      MUSIC_ENABLED: String(props.musicEnabled ?? false),
       CLIENT_ID: props.discord.clientId,
       GUILD_ID: props.discord.guildId,
       TIMEZONE: props.timeZone,

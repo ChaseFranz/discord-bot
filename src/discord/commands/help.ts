@@ -1,6 +1,6 @@
 import { EmbedBuilder, InteractionContextType, SlashCommandBuilder } from 'discord.js';
 import { truncate } from '../../util/text.js';
-import type { BotCommand } from '../types.js';
+import { unavailableReason, type BotCommand } from '../types.js';
 
 export const helpCommand: BotCommand = {
   data: new SlashCommandBuilder()
@@ -28,7 +28,8 @@ export const helpCommand: BotCommand = {
       const json = command.data.toJSON();
       const options = (json.options ?? []).map((option) => `**${option.name}**: ${option.description}`).join('\n');
       const value = `${json.description}${options ? `\n**Options:**\n${options}` : ''}\n**Usage:** ${command.usage}`;
-      return { name: `/${json.name}`, value: truncate(value, 1024) };
+      const off = unavailableReason(command, services.config) ? ' (turned off)' : '';
+      return { name: `/${json.name}${off}`, value: truncate(value, 1024) };
     });
     embed.addFields(fields.slice(0, 25));
 

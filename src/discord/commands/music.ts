@@ -12,6 +12,7 @@ export const playCommand: BotCommand = {
   usage: '/play query: https://www.youtube.com/watch?v=example',
   cooldownSeconds: 2,
   voice: 'starts-call',
+  feature: 'music',
 
   async execute(context, services) {
     const { music } = requireVoice(services);
@@ -32,6 +33,7 @@ export const skipCommand: BotCommand = {
   data: new SlashCommandBuilder().setName('skip').setDescription('Skips the current song').setContexts(InteractionContextType.Guild),
   usage: '/skip',
   voice: 'in-call',
+  feature: 'music',
   async execute(context, services) {
     const skipped = requireVoice(services).music.skip(context.guildId);
     await context.editReply(`Skipped **${skipped.title}**.`);
@@ -45,6 +47,7 @@ export const stopCommand: BotCommand = {
     .setContexts(InteractionContextType.Guild),
   usage: '/stop',
   voice: 'in-call',
+  feature: 'music',
   async execute(context, services) {
     requireVoice(services).music.stop(context.guildId);
     await context.editReply('Stopped the music and cleared the queue.');
@@ -55,6 +58,7 @@ export const pauseCommand: BotCommand = {
   data: new SlashCommandBuilder().setName('pause').setDescription('Pauses the current song').setContexts(InteractionContextType.Guild),
   usage: '/pause',
   voice: 'in-call',
+  feature: 'music',
   async execute(context, services) {
     requireVoice(services).music.pause(context.guildId);
     await context.editReply('⏸️  Paused the current song.');
@@ -68,6 +72,7 @@ export const resumeCommand: BotCommand = {
     .setContexts(InteractionContextType.Guild),
   usage: '/resume',
   voice: 'in-call',
+  feature: 'music',
   async execute(context, services) {
     requireVoice(services).music.resume(context.guildId);
     await context.editReply('▶️  Resumed the song.');
@@ -81,6 +86,7 @@ export const queueCommand: BotCommand = {
     .setContexts(InteractionContextType.Guild),
   usage: '/queue',
   voice: 'in-call',
+  feature: 'music',
   async execute(context, services) {
     const { state, current, upcoming } = requireVoice(services).music.status(context.guildId);
     if (!current) {

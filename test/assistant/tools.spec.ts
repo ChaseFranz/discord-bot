@@ -87,6 +87,23 @@ describe('music and voice tools', () => {
     expect(notInVoice.isError).toBe(true);
   });
 
+  it('answers every music tool with "turned off" while music is off, without touching the player', async () => {
+    let played = false;
+    const idle = new MusicService(
+      { ensureOutput: async () => { throw new Error('should not join'); }, queueFinished: () => undefined },
+      { resolve: async () => ((played = true), null), open: async () => Readable.from(['x']) },
+      silentLogger(),
+    );
+    const off = createMusicToolProvider(idle, { enabled: false });
+    const names = off.listTools().map((definition) => definition.name);
+    expect(names).toEqual(tools.listTools().map((definition) => definition.name));
+    for (const name of names) {
+      const result = await off.callTool(name, name === 'play_music' ? { query: 'jelly fish jam' } : {}, context());
+      expect(result).toEqual({ content: expect.stringContaining('Music is turned off for now.'), isError: true });
+    }
+    expect(played).toBe(false);
+  });
+
   it('returns expected failures as tool errors', async () => {
     expect(await tools.callTool('pause_music', {}, context())).toEqual({ content: 'Paused "jazz".' });
     expect(await tools.callTool('pause_music', {}, context())).toEqual({ content: 'The music is already paused.', isError: true });

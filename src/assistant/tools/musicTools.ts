@@ -1,11 +1,16 @@
 import { z } from 'zod';
 import type { MusicService } from '../../music/MusicService.js';
-import { MusicError } from '../../music/types.js';
+import { MUSIC_TURNED_OFF, MusicError } from '../../music/types.js';
 import { NativeToolProvider, defineTool, type NativeTool } from './nativeTool.js';
 import type { ToolContext, ToolResult } from './types.js';
 
 const NOT_IN_VOICE: ToolResult = {
   content: "The person you're talking to isn't in a voice channel, so there's no music to control for them.",
+  isError: true,
+};
+
+const TURNED_OFF: ToolResult = {
+  content: `${MUSIC_TURNED_OFF} Nothing can be played, queued, paused or skipped. Tell them music is turned off for now.`,
   isError: true,
 };
 
@@ -21,7 +26,11 @@ function guard(run: (context: ToolContext) => Promise<string> | string) {
   };
 }
 
-export function createMusicToolProvider(music: MusicService): NativeToolProvider {
+/**
+ * Music controls for the assistant. With music turned off the tools stay, so Nimbus still knows
+ * what was asked, but each one answers that music is off and Nimbus says so.
+ */
+export function createMusicToolProvider(music: MusicService, options: { enabled: boolean } = { enabled: true }): NativeToolProvider {
   const tools: NativeTool[] = [
     defineTool({
       name: 'play_music',
@@ -83,5 +92,5 @@ export function createMusicToolProvider(music: MusicService): NativeToolProvider
       }),
     }),
   ];
-  return new NativeToolProvider('music', tools);
+  return new NativeToolProvider('music', options.enabled ? tools : tools.map((tool) => ({ ...tool, run: async () => TURNED_OFF })));
 }

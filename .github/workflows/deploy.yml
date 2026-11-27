@@ -32,6 +32,8 @@ jobs:
       ALERT_EMAIL: ${{ vars.ALERT_EMAIL }}
       DAILY_BUDGET_USD: ${{ vars.DAILY_BUDGET_USD }}
       MONTHLY_BUDGET_USD: ${{ vars.MONTHLY_BUDGET_USD }}
+      # Music is off on AWS unless this is "true" (YouTube blocks AWS addresses).
+      MUSIC_ENABLED: ${{ vars.MUSIC_ENABLED }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -57,7 +59,8 @@ jobs:
           npx cdk deploy NimbusCloud --require-approval never \
             -c "clientId=$DISCORD_CLIENT_ID" -c "guildId=$DISCORD_GUILD_ID" -c "publicKey=$DISCORD_PUBLIC_KEY" \
             -c "timeZone=$TIMEZONE" -c "claudeProvider=$CLAUDE_PROVIDER" -c "anthropicWorkspaceId=$ANTHROPIC_AWS_WORKSPACE_ID" \
-            -c "alertEmail=$ALERT_EMAIL" -c "dailyBudgetUsd=$DAILY_BUDGET_USD" -c "monthlyBudgetUsd=$MONTHLY_BUDGET_USD"
+            -c "alertEmail=$ALERT_EMAIL" -c "dailyBudgetUsd=$DAILY_BUDGET_USD" -c "monthlyBudgetUsd=$MONTHLY_BUDGET_USD" \
+            -c "musicEnabled=$MUSIC_ENABLED"
       - name: Register slash commands
         # The script reads the token from Secrets Manager itself; it never appears in the log.
         run: npm run register-commands

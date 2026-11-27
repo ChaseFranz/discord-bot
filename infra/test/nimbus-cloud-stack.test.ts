@@ -71,6 +71,31 @@ test('passes the token to the voice task as an ECS secret and sets the time zone
   cloud.resourceCountIs('AWS::SecretsManager::Secret', 0);
 });
 
+test('turns music off on AWS unless asked: YouTube refuses audio to AWS addresses', () => {
+  cloud.hasResourceProperties('AWS::ECS::TaskDefinition', {
+    ContainerDefinitions: [Match.objectLike({ Environment: Match.arrayWith([{ Name: 'MUSIC_ENABLED', Value: 'false' }]) })],
+  });
+  // The worker checks it too, so /play doesn't start the voice task just to say music is off.
+  cloud.hasResourceProperties('AWS::Lambda::Function', {
+    FunctionName: 'nimbus-worker',
+    Environment: { Variables: Match.objectLike({ MUSIC_ENABLED: 'false' }) },
+  });
+
+  const withMusic = Template.fromStack(
+    new NimbusCloudStack(new App({ context: { 'aws:cdk:bundling-stacks': [] } }), 'CloudWithMusic', {
+      discord: { clientId: '100000000000000001', guildId: '100000000000000002', publicKey: 'a'.repeat(64) },
+      timeZone: 'America/Chicago',
+      claude: { provider: 'anthropic' },
+      musicEnabled: true,
+      projectRoot: join(__dirname, '..', '..'),
+    }),
+  );
+  withMusic.hasResourceProperties('AWS::Lambda::Function', {
+    FunctionName: 'nimbus-worker',
+    Environment: { Variables: Match.objectLike({ MUSIC_ENABLED: 'true' }) },
+  });
+});
+
 test('alerts by email on Lambda errors and on AWS spending', () => {
   cloud.resourceCountIs('AWS::CloudWatch::Alarm', 3);
   cloud.hasResourceProperties('AWS::Budgets::Budget', { Budget: Match.objectLike({ BudgetLimit: { Amount: 25, Unit: 'USD' } }) });

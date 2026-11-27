@@ -60,16 +60,20 @@ export async function buildCallStack(core: Core, bot: DiscordBot, alarm: Reminde
     schedule: systemSchedule,
   });
   const tracks = new YtDlpTrackSource({ executable: config.music.ytDlpPath });
-  // Music needs yt-dlp; nothing else does, so a missing one is reported but not fatal.
-  try {
-    logger.info(`yt-dlp ${await tracks.version()} ready for music.`);
-  } catch (error) {
-    logger.error(`Music won't play until yt-dlp works: ${describeError(error)}`);
+  if (!config.music.enabled) {
+    logger.info('Music is turned off (MUSIC_ENABLED=false): the music commands and Nimbus will say so.');
+  } else {
+    // Music needs yt-dlp; nothing else does, so a missing one is reported but not fatal.
+    try {
+      logger.info(`yt-dlp ${await tracks.version()} ready for music.`);
+    } catch (error) {
+      logger.error(`Music won't play until yt-dlp works: ${describeError(error)}`);
+    }
   }
   const music = new MusicService(voice, tracks, logger);
 
   const assistant = core.assistant([
-    createMusicToolProvider(music),
+    createMusicToolProvider(music, { enabled: config.music.enabled }),
     createVoiceToolProvider(voice),
     createReminderToolProvider({ reminders: storage.reminders, alarm, clock, timeZone: config.assistant.timeZone }),
   ]);
