@@ -46,8 +46,9 @@ export class InteractionWorker {
       await context.editReply('This bot only works in its own server.');
       return;
     }
-    // Before anything else, so /play with music turned off doesn't start the voice task just to say so.
-    const reason = deps.dispatcher.unavailable(command);
+    // Before anything else, so /play doesn't start the voice task just to say that music is turned
+    // off, or that nobody is running a music helper.
+    const reason = await deps.dispatcher.blocked(command);
     if (reason) {
       await context.editReply(reason);
       return;

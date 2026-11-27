@@ -7,7 +7,7 @@ Nimbus is an Alexa-style assistant for your Discord voice calls, powered by Clau
 - **Conversations feel natural**: after Nimbus answers, anyone can keep talking to it for a few seconds without saying its name. Talk over its answer and it pauses to hear you. "Nimbus, stop" cuts it off instantly.
 - An **MCP memory server** gives Claude tools to search and read past voice conversations, short recaps of past calls, and each person's own history. Old context is fetched when it's needed instead of always being stuffed into the prompt.
 - **Reminders and timers**, said out loud in the call or posted as a mention ("Nimbus, remind us at 9 to start the raid").
-- **Music** from YouTube, by slash command or by voice ("Nimbus, play some lo-fi"). Music pauses while the assistant talks.
+- **Music** from YouTube, by slash command or by voice ("Nimbus, play some lo-fi"). Music pauses while the assistant talks. On AWS, where YouTube won't serve the bot, a small [music helper](helper/README.md) that someone runs on their own computer fetches it.
 - **Web search** for anything recent (news, scores, prices, weather).
 - **Privacy and cost controls**: everyone chooses what gets transcribed with `/privacy`, and a daily spending cap (default $5) with `/usage` keeps the bill predictable.
 
@@ -162,6 +162,7 @@ npm run smoke -- --aws        # AWS only
 | `/memories` | Shows only you what Nimbus remembers about you, with options to forget one note or everything. |
 | `/play query:` | Plays a YouTube URL or search; queues if something is playing. |
 | `/skip` `/pause` `/resume` `/stop` `/queue` | Music controls. |
+| `/musichelper` | On AWS: shows who is running a [music helper](helper/README.md) and gives you the code to set up your own. Shown only to you. |
 | `/help` | Lists commands. |
 
 By voice: "Nimbus, play Bohemian Rhapsody", "Nimbus, skip this", "Nimbus, what did Alex say about the game?", "Nimbus, what's the weather tomorrow?", "Nimbus, remind me in 10 minutes to take the pizza out", "Nimbus, stop".
@@ -230,11 +231,11 @@ Compared with running on your PC:
 
 - **`/join` and `/play`** take about 30–60 seconds the first time, while the voice task starts. Nimbus replies "On my way…" right away.
 - **@mention chat** is off: it needs a connection that's always open. `/chat` works as usual.
-- **Music** is off: YouTube won't hand audio to AWS addresses ("Sign in to confirm you're not a bot"). The music commands, and Nimbus when asked, say music is turned off. Setting the `MUSIC_ENABLED` variable to `true` turns it back on at the next deploy.
+- **Music** needs a helper: YouTube won't hand audio to AWS addresses ("Sign in to confirm you're not a bot"). So here the audio is fetched by a [music helper](helper/README.md), a one-file script that anyone in the server can run on their own computer after getting a code from `/musichelper`. It uploads each song in pieces to a private S3 bucket, and the voice task plays them as they arrive; a song is deleted a day later. While nobody is running a helper, `/play` and Nimbus say so and link to the instructions.
 - **Data** is kept in two on-demand DynamoDB tables. Old transcripts and conversation turns expire by themselves (DynamoDB's TTL). Nothing is copied from your PC's SQLite files.
 - **Reminders** arrive on time even when nobody is in a call.
 
-It costs roughly **$5 a month** at about 3 hours of calls a day, on top of Claude, Transcribe and Polly usage. The voice task is about $0.025 an hour, plus a public IP while it runs. Lambda, SQS, EventBridge and DynamoDB stay within or near their free tiers at this size, and the two secrets are $0.80 a month. With `ALERT_EMAIL` set, an AWS Budgets alert emails you at 80% of `MONTHLY_BUDGET_USD` (default $25).
+It costs roughly **$5 a month** at about 3 hours of calls a day, on top of Claude, Transcribe and Polly usage. The voice task is about $0.025 an hour, plus a public IP while it runs. Lambda, SQS, EventBridge and DynamoDB stay within or near their free tiers at this size, and the two secrets are $0.80 a month. A music helper checks in every couple of seconds while it runs, which comes to under a dollar a month for one that's left running around the clock and a few cents for one that runs only during calls; the audio passing through S3 is a fraction of a cent a song. With `ALERT_EMAIL` set, an AWS Budgets alert emails you at 80% of `MONTHLY_BUDGET_USD` (default $25).
 
 ### One-time setup
 
@@ -258,7 +259,7 @@ It costs roughly **$5 a month** at about 3 hours of calls a day, on top of Claud
    | `TIMEZONE` | Your time zone, e.g. `America/Chicago`. AWS runs in UTC otherwise, and reminders would be off. |
    | `CLAUDE_PROVIDER` | `anthropic` for now (uses the API key from step 1). Change it to `aws` and add `ANTHROPIC_AWS_WORKSPACE_ID` once Claude Platform on AWS is set up. |
    | `ALERT_EMAIL` | Optional: gets Lambda error alerts and the spending alert |
-   | `MUSIC_ENABLED` | Optional: `true` turns music on. It's off on AWS by default, because YouTube blocks AWS addresses. |
+   | `MUSIC_ENABLED` | Optional: `false` turns music off altogether. By default it's on, fetched by music helpers. |
 | `BOT_SETTINGS` | Optional: other settings from `.env.example` for the bot on AWS, as `NAME=value` pairs separated by commas or new lines, e.g. `VOICE_SILENCE_MS=500, VOICE_BARGE_IN=everyone`. They take effect at the next deploy. Not for secrets. |
 | `DAILY_BUDGET_USD`, `MONTHLY_BUDGET_USD` | Optional: the bot's daily cap (default $5) and the AWS Budgets alert (default $25) |
 
@@ -311,7 +312,7 @@ Everything external sits behind a small interface (a "port"). The programs that 
 | Calls (`src/calls/voiceTask.ts`) | Handled in the one process | An on-demand Fargate task, given orders through SQS, with a status record in DynamoDB |
 | `SpeechToText` (`src/speech/ports.ts`) | AWS Transcribe streaming | same |
 | `TextToSpeech` | AWS Polly | same |
-| `TrackSource` (`src/music/types.ts`) | YouTube through yt-dlp (`src/music/YtDlpTrackSource.ts`) | same; the image pins a yt-dlp release |
+| `TrackSource` (`src/music/types.ts`) | YouTube through yt-dlp (`src/music/YtDlpTrackSource.ts`) | YouTube through music helpers (`src/music/relay/`): requests and registrations in DynamoDB, audio relayed through S3, a small Lambda for helpers to talk to |
 | Claude access (`src/claude/client.ts`) | Claude Platform on AWS (`AnthropicAws`), or the Claude API directly | same, through IAM roles instead of access keys |
 | Memory tools | MCP server in-process (`src/memory/inProcess.ts`) | same |
 | `ToolProvider` (`src/assistant/tools/types.ts`) | native tools + MCP adapter | same |
@@ -338,8 +339,11 @@ src/
   voice/                 voice sessions, audio capture, speech queue, wake word, and the turn-taking
                          that decides when to answer, start over, wait, pause or stop
   music/                 queue service + YouTube source
+    relay/               music helpers: registrations, song requests, the address helpers talk to,
+                         and the track source that plays what they upload
   discord/               client, command dispatch (Gateway and HTTPS), slash commands, @mention chat
   scripts/               smoke test, command registration, switching between AWS and a PC
+helper/                  the music helper people run on their own computers, and how to set it up
 infra/                   AWS CDK app: Nimbus (PC identity), NimbusDeploy (GitHub access, secrets),
                          NimbusCloud (the bot on AWS)
 .github/workflows/       CI and deploys

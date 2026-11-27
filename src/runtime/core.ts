@@ -9,6 +9,7 @@ import { customizeCommand } from '../discord/commands/customize.js';
 import { helpCommand } from '../discord/commands/help.js';
 import { memoriesCommand, memoriesComponents } from '../discord/commands/memories.js';
 import { pauseCommand, playCommand, queueCommand, resumeCommand, skipCommand, stopCommand } from '../discord/commands/music.js';
+import { musicHelperCommand } from '../discord/commands/musichelper.js';
 import { privacyCommand } from '../discord/commands/privacy.js';
 import { resetButtons, resetCommand } from '../discord/commands/reset.js';
 import { usageCommand } from '../discord/commands/usage.js';
@@ -148,6 +149,7 @@ export function allCommands(): { commands: BotCommand[]; components: ComponentHa
       queueCommand,
       pauseCommand,
       resumeCommand,
+      musicHelperCommand,
     ],
     components: [resetButtons, memoriesComponents],
   };

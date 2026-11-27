@@ -45,9 +45,27 @@ export class CommandDispatcher {
     return unavailableReason(command, this.services.config);
   }
 
+  /**
+   * Why `command` can't be run right now, or undefined if it can: its feature is turned off, or it
+   * would start music and nobody is running a music helper to fetch it.
+   */
+  async blocked(command: BotCommand): Promise<string | undefined> {
+    const off = this.unavailable(command);
+    if (off) return off;
+    const helpers = this.services.musicHelpers;
+    if (!helpers || command.feature !== 'music' || command.voice !== 'starts-call') return undefined;
+    try {
+      return await helpers.blocker();
+    } catch (error) {
+      // If helpers can't be checked, let the command try: it will say what went wrong itself.
+      this.services.logger.warn(`Could not check for a music helper before /${command.data.name}: ${describeError(error)}`);
+      return undefined;
+    }
+  }
+
   /** Runs an already-deferred command, replying with an error message if it fails. */
   async runCommand(command: BotCommand, context: CommandContext): Promise<void> {
-    const reason = this.unavailable(command);
+    const reason = await this.blocked(command);
     if (reason) {
       await context.editReply(reason).catch((error: unknown) => this.services.logger.warn(`Could not send reply: ${describeError(error)}`));
       return;

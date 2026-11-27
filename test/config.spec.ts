@@ -40,7 +40,7 @@ describe('loadConfig', () => {
       pollyVoiceId: 'Joanna',
       pollyEngine: 'generative',
     });
-    expect(config.music).toEqual({ enabled: true, ytDlpPath: 'yt-dlp' });
+    expect(config.music).toEqual({ enabled: true, source: 'direct', ytDlpPath: 'yt-dlp', helpers: undefined });
     expect(loadConfig({ ...required, MUSIC_ENABLED: 'false' }).music.enabled).toBe(false);
     expect(loadConfig({ ...required, YT_DLP_PATH: '/opt/bin/yt-dlp' }).music.ytDlpPath).toBe('/opt/bin/yt-dlp');
   });
@@ -111,6 +111,32 @@ describe('loadConfig', () => {
     // Too short a silence would cut people off between words.
     expect(() => loadConfig({ ...required, VOICE_SILENCE_MS: '50' })).toThrow(/VOICE_SILENCE_MS/);
     expect(() => loadConfig({ ...required, VOICE_BARGE_IN_MS: '20' })).toThrow(/VOICE_BARGE_IN_MS/);
+  });
+
+  it('has music fetched by helpers only with everything that takes in place', () => {
+    const helpers = {
+      ...required, STORAGE: 'dynamodb', MUSIC_SOURCE: 'helpers',
+      MUSIC_HELPER_API_URL: 'https://abc.lambda-url.us-east-1.on.aws/', MUSIC_RELAY_BUCKET: 'nimbus-music-relay',
+    };
+    expect(loadConfig(helpers).music).toEqual({
+      enabled: true, source: 'helpers', ytDlpPath: 'yt-dlp',
+      helpers: {
+        apiUrl: 'https://abc.lambda-url.us-east-1.on.aws/', relayBucket: 'nimbus-music-relay',
+        guideUrl: 'https://github.com/ChaseFranz/discord-bot/tree/main/helper#readme',
+      },
+    });
+    expect(loadConfig({ ...helpers, MUSIC_HELPER_GUIDE_URL: 'https://example.com/helper' }).music.helpers?.guideUrl).toBe('https://example.com/helper');
+
+    expect.assertions(6);
+    try {
+      loadConfig({ ...required, MUSIC_SOURCE: 'helpers' });
+    } catch (error) {
+      const message = (error as Error).message;
+      expect(error).toBeInstanceOf(ConfigError);
+      expect(message).toContain('MUSIC_SOURCE: "helpers" needs STORAGE=dynamodb');
+      expect(message).toContain('MUSIC_HELPER_API_URL: required when MUSIC_SOURCE=helpers');
+      expect(message).toContain('MUSIC_RELAY_BUCKET: required when MUSIC_SOURCE=helpers');
+    }
   });
 
   it('switches storage to DynamoDB tables', () => {

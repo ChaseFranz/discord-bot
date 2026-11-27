@@ -5,6 +5,8 @@ import type { CreateTableCommandInput } from '@aws-sdk/client-dynamodb';
  *
  *  - The main table holds conversations, voice transcripts and call recaps, settings, reminders and
  *    usage, distinguished by key prefix (`THREAD#`, `SESSION#`, `SETTINGS#`, `REMINDER#`, `USAGE#`).
+ *    The AWS deployment also keeps its voice task record (`VOICE#`) and music helpers' registrations
+ *    and song requests (`HELPER#`, `MUSICJOB#`) there; see src/aws/.
  *  - The memory table holds the long-term notes about people, kept apart (as `memories.db` is
  *    locally) so it can be backed up, inspected or restored on its own.
  *

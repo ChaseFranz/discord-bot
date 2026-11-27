@@ -6,6 +6,8 @@ export interface Track {
   durationSeconds?: number;
   /** Display name of whoever queued it. */
   requestedBy?: string;
+  /** Something the source that resolved it can use to open it (meaningless to anything else). */
+  handle?: string;
 }
 
 /** Where tracks come from (YouTube today). */

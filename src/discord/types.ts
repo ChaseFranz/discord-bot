@@ -3,6 +3,7 @@ import type { Assistant } from '../assistant/Assistant.js';
 import type { AppConfig } from '../config/config.js';
 import type { Logger } from '../logging/logger.js';
 import type { MusicService } from '../music/MusicService.js';
+import type { HelperDesk } from '../music/relay/HelperDesk.js';
 import { MUSIC_TURNED_OFF } from '../music/types.js';
 import type { PrivacyService } from '../privacy/PrivacyService.js';
 import type { ConversationRepository, MemoryRepository, SettingsRepository } from '../storage/ports.js';
@@ -28,6 +29,8 @@ export interface AppServices {
    */
   voice?: VoiceSessionManager;
   music?: MusicService;
+  /** Music helpers, where music is fetched by them (the bot on AWS). Absent where the bot fetches music itself. */
+  musicHelpers?: HelperDesk;
   /** All registered slash commands (for /help). */
   commands: () => readonly BotCommand[];
   /** Whether @mentioning the bot gets an answer here (it needs the live connection, so not on AWS). */

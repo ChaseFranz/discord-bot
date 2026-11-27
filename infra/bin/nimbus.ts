@@ -55,7 +55,8 @@ if (clientId && guildId && publicKey && timeZone) {
     claude,
     alertEmail: context('alertEmail'),
     monthlyBudgetUsd: monthlyBudget ? Number(monthlyBudget) : undefined,
-    musicEnabled: music === 'true',
+    // On unless it is switched off: on AWS, music is fetched by music helpers.
+    musicEnabled: music !== 'false',
     // Other settings from .env.example (how it behaves in calls, say), then the daily budget.
     botSettings: { ...parseBotSettings(context('botSettings')), ...(dailyBudget ? { DAILY_BUDGET_USD: dailyBudget } : {}) },
     projectRoot: join(__dirname, '..', '..'),

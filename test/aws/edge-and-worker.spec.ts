@@ -112,6 +112,44 @@ describe('the worker', () => {
     expect(replies).toEqual([{ content: 'Music is turned off for now.', allowed_mentions: { parse: [] } }]);
   });
 
+  it('says nobody is running a music helper without starting the voice task, and relays /play when someone is', async () => {
+    const replies: unknown[] = [];
+    const events: string[] = [];
+    const play: BotCommand = {
+      data: new SlashCommandBuilder().setName('play').setDescription('play'),
+      usage: '/play',
+      voice: 'starts-call',
+      feature: 'music',
+      cooldownSeconds: 0,
+      execute: async () => void events.push('ran play'),
+    };
+    let blocker: () => Promise<string | undefined> = async () => 'Music needs a helper right now, and nobody\'s is running.';
+    const worker = new InteractionWorker({
+      guildId: 'g',
+      applicationId: 'app',
+      rest: { get: async () => undefined, post: async (_route, body) => void replies.push(body), patch: async (_route, body) => void replies.push(body) },
+      dispatcher: new CommandDispatcher([play], [], {
+        logger: silentLogger(),
+        config: { music: { enabled: true } },
+        musicHelpers: { blocker: () => blocker() },
+      } as unknown as AppServices),
+      control: { dispatch: async (cmd) => void events.push(`relayed ${cmd.data.name}`) },
+      usage: { refresh: async () => void events.push('refresh'), flush: async () => void events.push('flush') },
+      logger: silentLogger(),
+    });
+    await worker.handle(commandInteraction('play'));
+    expect(events).toEqual(['flush']);
+    expect(replies).toEqual([{ content: "Music needs a helper right now, and nobody's is running.", allowed_mentions: { parse: [] } }]);
+
+    blocker = async () => undefined;
+    await worker.handle(commandInteraction('play'));
+    // If helpers can't be checked, /play goes ahead: the voice task says what went wrong itself.
+    blocker = async () => Promise.reject(new Error('database is down'));
+    await worker.handle(commandInteraction('play'));
+    expect(events).toEqual(['flush', 'refresh', 'relayed play', 'flush', 'refresh', 'relayed play', 'flush']);
+    expect(replies).toHaveLength(1);
+  });
+
   it('refuses other servers and unknown commands, and routes buttons', async () => {
     const { worker, replies, events } = setup();
     await worker.handle(commandInteraction('usage', 'elsewhere'));

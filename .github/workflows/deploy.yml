@@ -32,7 +32,8 @@ jobs:
       ALERT_EMAIL: ${{ vars.ALERT_EMAIL }}
       DAILY_BUDGET_USD: ${{ vars.DAILY_BUDGET_USD }}
       MONTHLY_BUDGET_USD: ${{ vars.MONTHLY_BUDGET_USD }}
-      # Music is off on AWS unless this is "true" (YouTube blocks AWS addresses).
+      # "false" turns music off. Otherwise it is fetched by music helpers (see helper/README.md),
+      # because YouTube blocks AWS addresses.
       MUSIC_ENABLED: ${{ vars.MUSIC_ENABLED }}
       # Other settings from .env.example, as NAME=value pairs (commas or new lines between them). Not for secrets.
       BOT_SETTINGS: ${{ vars.BOT_SETTINGS }}
