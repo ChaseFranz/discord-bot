@@ -3,6 +3,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import {
   BatchWriteCommand,
   DynamoDBDocumentClient,
+  PutCommand,
   QueryCommand,
   UpdateCommand,
   type QueryCommandInput,
@@ -95,13 +96,19 @@ export async function queryUntil(
   return items;
 }
 
+/** The partition holding the id counters. Each counter's sort key says what it numbers, e.g. `SESSION`. */
+export const COUNTER_PARTITION = 'COUNTER';
+
+/** How many taken ids `putWithNewId` skips before it gives up. */
+const MAX_TAKEN_IDS = 100;
+
 /** Hands out increasing ids from a counter item (1, 2, 3, ...). */
 export async function nextId(doc: DynamoDBDocumentClient, table: string, counter: string): Promise<number> {
   const { refs, map } = names('value');
   const result = await doc.send(
     new UpdateCommand({
       TableName: table,
-      Key: { pk: 'COUNTER', sk: counter },
+      Key: { pk: COUNTER_PARTITION, sk: counter },
       UpdateExpression: `ADD ${refs[0]} :one`,
       ExpressionAttributeNames: map,
       ExpressionAttributeValues: { ':one': 1 },
@@ -109,6 +116,29 @@ export async function nextId(doc: DynamoDBDocumentClient, table: string, counter
     }),
   );
   return Number(result.Attributes?.value);
+}
+
+/**
+ * Writes a new item under the next id from `counter`, never over an existing item. If the id's key
+ * is already taken (the counter is behind its items, as after a restore or a renamed counter), it
+ * takes the next id and tries again. Returns the id used.
+ */
+export async function putWithNewId(
+  doc: DynamoDBDocumentClient,
+  table: string,
+  counter: string,
+  itemFor: (id: number) => Item,
+): Promise<number> {
+  for (let attempt = 0; attempt < MAX_TAKEN_IDS; attempt++) {
+    const id = await nextId(doc, table, counter);
+    try {
+      await doc.send(new PutCommand({ TableName: table, Item: itemFor(id), ConditionExpression: 'attribute_not_exists(pk)' }));
+      return id;
+    } catch (error) {
+      if (!isConflict(error)) throw error;
+    }
+  }
+  throw new Error(`The ${counter} counter in ${table} is more than ${MAX_TAKEN_IDS} ids behind the items it numbers.`);
 }
 
 /** Deletes items by key, 25 at a time, retrying anything DynamoDB leaves unprocessed. */

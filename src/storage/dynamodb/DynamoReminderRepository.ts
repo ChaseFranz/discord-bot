@@ -1,11 +1,12 @@
-import { GetCommand, PutCommand, QueryCommand, UpdateCommand, type DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
+import { GetCommand, QueryCommand, UpdateCommand, type DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import type { NewReminder, Reminder, ReminderRepository, RepeatRule } from '../ports.js';
 import { systemClock, type Clock } from '../../util/time.js';
-import { expiryAfter, isConflict, names, nextId, pad, queryAll, type Item } from './dynamo.js';
+import { expiryAfter, isConflict, names, pad, putWithNewId, queryAll, type Item } from './dynamo.js';
 import { GSI1, GSI2 } from './schema.js';
 
 const SK = 'REMINDER';
 const DUE = 'REMINDER_DUE';
+const COUNTER = 'REMINDER';
 
 /**
  * Reminders under `REMINDER#<id>`. While a reminder is active it appears in two sparse indexes:
@@ -22,15 +23,15 @@ export class DynamoReminderRepository implements ReminderRepository {
   ) {}
 
   async create(reminder: NewReminder): Promise<Reminder> {
-    const id = await nextId(this.doc, this.table, 'reminder');
-    const stored: Reminder = { ...reminder, id, firedCount: 0, lastFiredAt: null, status: 'active' };
-    await this.doc.send(
-      new PutCommand({
-        TableName: this.table,
-        Item: { pk: key(id), sk: SK, ...stored, updatedAt: reminder.createdAt, ...activeIndexes(stored, reminder.dueAt) },
-      }),
-    );
-    return stored;
+    const stored = (id: number): Reminder => ({ ...reminder, id, firedCount: 0, lastFiredAt: null, status: 'active' });
+    const id = await putWithNewId(this.doc, this.table, COUNTER, (id) => ({
+      pk: key(id),
+      sk: SK,
+      ...stored(id),
+      updatedAt: reminder.createdAt,
+      ...activeIndexes(stored(id), reminder.dueAt),
+    }));
+    return stored(id);
   }
 
   async get(guildId: string, id: number): Promise<Reminder | undefined> {

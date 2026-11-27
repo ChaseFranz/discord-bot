@@ -40,12 +40,15 @@ describe('loadConfig', () => {
       pollyVoiceId: 'Joanna',
       pollyEngine: 'generative',
     });
+    expect(config.music).toEqual({ ytDlpPath: 'yt-dlp' });
+    expect(loadConfig({ ...required, YT_DLP_PATH: '/opt/bin/yt-dlp' }).music.ytDlpPath).toBe('/opt/bin/yt-dlp');
   });
 
   it('treats blank values as unset', () => {
-    const config = loadConfig({ ...required, CLAUDE_CHAT_MODEL: '   ', MEMORY_RETENTION_DAYS: '' });
+    const config = loadConfig({ ...required, CLAUDE_CHAT_MODEL: '   ', MEMORY_RETENTION_DAYS: '', YT_DLP_PATH: ' ' });
     expect(config.claude.chat.model).toBe('claude-opus-5-5');
     expect(config.storage.retentionDays).toBe(30);
+    expect(config.music.ytDlpPath).toBe('yt-dlp');
   });
 
   it('derives the wake word from the assistant name unless set', () => {

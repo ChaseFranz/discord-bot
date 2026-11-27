@@ -12,6 +12,10 @@ import type { CreateTableCommandInput } from '@aws-sdk/client-dynamodb';
  * transcript in time order; a person's active reminders) and `gsi2` (open or unrecapped sessions;
  * reminders by due time). Items with an `expiresAt` (epoch seconds) are deleted by DynamoDB's TTL,
  * which replaces the retention sweep. The CDK stack in infra/ must match these definitions.
+ *
+ * Key values are `#`-separated parts. Type names and fixed markers are upper case (`NOTE#`, `META`,
+ * `SESSION_STATUS#OPEN`); data is kept as it is (Discord IDs, dates, model and metric names). Numbers
+ * that DynamoDB sorts by are zero-padded. Ids come from counter items, `COUNTER` / `<TYPE>`.
  */
 export const TTL_ATTRIBUTE = 'expiresAt';
 export const GSI1 = 'gsi1';
