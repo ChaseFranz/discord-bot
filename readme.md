@@ -231,7 +231,7 @@ Compared with running on your PC:
 
 - **`/join` and `/play`** take about 30–60 seconds the first time, while the voice task starts. Nimbus replies "On my way…" right away.
 - **@mention chat** is off: it needs a connection that's always open. `/chat` works as usual.
-- **Music** needs a helper: YouTube won't hand audio to AWS addresses ("Sign in to confirm you're not a bot"). So here the audio is fetched by a [music helper](helper/README.md), a one-file script that anyone in the server can run on their own computer after getting a code from `/musichelper`. It uploads each song in pieces to a private S3 bucket, and the voice task plays them as they arrive; a song is deleted a day later. While nobody is running a helper, `/play` and Nimbus say so and link to the instructions.
+- **Music** needs a helper: YouTube won't hand audio to AWS addresses ("Sign in to confirm you're not a bot"). So here the audio is fetched by a [music helper](helper/README.md), a one-file script that anyone in the server can run on their own computer after getting a code from `/musichelper`. It uploads each song in pieces to a private S3 bucket, and the voice task plays them as they arrive; a song is deleted a day later. Live streams work too, and are sent only for as long as they are being played. While nobody is running a helper, `/play` and Nimbus say so and link to the instructions.
 - **Data** is kept in two on-demand DynamoDB tables. Old transcripts and conversation turns expire by themselves (DynamoDB's TTL). Nothing is copied from your PC's SQLite files.
 - **Reminders** arrive on time even when nobody is in a call.
 

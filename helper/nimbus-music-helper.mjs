@@ -11,19 +11,26 @@
  *   node nimbus-music-helper.mjs            after that
  *   node nimbus-music-helper.mjs --forget   forget the saved code
  *
- * It needs Node.js 22 or newer and nothing else: it downloads yt-dlp itself, into
- * ~/.nimbus-music-helper. It only ever makes outgoing requests, to the address in your code, to
- * YouTube (through yt-dlp) and to GitHub (to download yt-dlp). See README.md next to this file.
+ * It needs Node.js 22 or newer and nothing else: it downloads yt-dlp itself, and ffmpeg (which
+ * live streams need) unless you have one, into ~/.nimbus-music-helper. It only ever makes outgoing
+ * requests, to the address in your code, to YouTube (through yt-dlp) and to GitHub (to download
+ * yt-dlp and ffmpeg). See README.md next to this file.
  */
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { gunzipSync } from 'node:zlib';
 
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 /** How much audio goes up in each request: small enough that playback starts within a second or two. */
 const CHUNK_BYTES = 256 * 1024;
+/**
+ * Audio that arrives slowly goes up after this long, however little there is. A live stream comes
+ * in only as fast as it plays, and waiting to fill a whole piece would leave Nimbus with nothing to play.
+ */
+const FLUSH_MS = 2_000;
 /** Songs fetched at the same time, at most (people sometimes queue several at once). */
 const MAX_JOBS = 3;
 const YT_DLP_RELEASES = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download';
@@ -31,6 +38,20 @@ const YT_DLP_RELEASES = 'https://github.com/yt-dlp/yt-dlp/releases/latest/downlo
 const UPDATE_EVERY_MS = 24 * 60 * 60 * 1000;
 const WATCH_URL = /^https:\/\/www\.youtube\.com\/watch\?v=[\w-]{11}$/;
 const NOTHING_FOUND = 'nothing-found';
+const LIVE_NEEDS_FFMPEG = 'live-needs-ffmpeg';
+/**
+ * ffmpeg, which yt-dlp needs for live streams. One fixed build for each kind of computer: the
+ * files the ffmpeg-static project publishes (https://github.com/eugeneware/ffmpeg-static), each
+ * checked here against the SHA-256 it was published with.
+ */
+const FFMPEG_RELEASE = 'https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1';
+const FFMPEG_BUILDS = {
+  'win32-x64': { file: 'ffmpeg-win32-x64.gz', sha256: '8883a3dffbd0a16cf4ef95206ea05283f78908dbfb118f73c83f4951dcc06d77' },
+  'linux-x64': { file: 'ffmpeg-linux-x64.gz', sha256: 'bfe8a8fc511530457b528c48d77b5737527b504a3797a9bc4866aeca69c2dffa' },
+  'linux-arm64': { file: 'ffmpeg-linux-arm64.gz', sha256: '754a678672298bc68156adff58aa7385a592c2b30b1d0ae8750c45c915c4bac0' },
+  'darwin-arm64': { file: 'ffmpeg-darwin-arm64.gz', sha256: '8923876afa8db5585022d7860ec7e589af192f441c56793971276d450ed3bbfa' },
+  'darwin-x64': { file: 'ffmpeg-darwin-x64.gz', sha256: '929b375c1182d956c51f7ac25e0b2b0411fb01f6f407aa15c9758efeb4242106' },
+};
 
 const home = process.env.NIMBUS_HELPER_HOME || join(homedir(), '.nimbus-music-helper');
 const configFile = join(home, 'config.json');
@@ -146,6 +167,58 @@ async function ensureYtDlp() {
   return file;
 }
 
+/**
+ * Finds ffmpeg, which fetching a live stream takes: one you already have, or the build above,
+ * downloaded the first time. Without one everything else still works, so nothing here is fatal.
+ * Resolves to { available, location }: `location` is set when yt-dlp has to be told where it is.
+ */
+async function ensureFfmpeg() {
+  if (process.env.NIMBUS_FFMPEG) return { available: true, location: process.env.NIMBUS_FFMPEG };
+  const own = join(home, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
+  if (existsSync(own) && (await run(own, ['-version'])).code === 0) return { available: true, location: own };
+  // One that is installed already will do: yt-dlp finds it by itself.
+  if ((await run('ffmpeg', ['-version'])).code === 0) return { available: true, location: undefined };
+
+  const without = "Live streams won't play until there is one; every other song is fine.";
+  const build = FFMPEG_BUILDS[`${process.platform}-${process.arch}`];
+  if (!build) {
+    say(`There's no ready-made ffmpeg for ${process.platform}/${process.arch}. ${without} Install ffmpeg yourself, or set NIMBUS_FFMPEG to where it is.`);
+    return { available: false, location: undefined };
+  }
+  try {
+    say('Downloading ffmpeg (about 30 MB, this once): it is what fetches live streams...');
+    const packed = await download(`${FFMPEG_RELEASE}/${build.file}`);
+    if (createHash('sha256').update(packed).digest('hex') !== build.sha256) throw new Error('the download did not match its known checksum');
+    writeFileSync(own, gunzipSync(packed));
+    if (process.platform !== 'win32') chmodSync(own, 0o755);
+    const version = await run(own, ['-version']);
+    if (version.code !== 0) {
+      rmSync(own, { force: true });
+      throw new Error(`it would not start (${version.stderr.trim() || `exit code ${version.code}`})`);
+    }
+    say('ffmpeg is ready.');
+    return { available: true, location: own };
+  } catch (error) {
+    say(`Could not get ffmpeg: ${error.message}. ${without} It is tried again the next time this starts.`);
+    return { available: false, location: undefined };
+  }
+}
+
+/** Ends yt-dlp and whatever it started (it runs ffmpeg for a live stream). */
+function stopChild(child) {
+  if (child.exitCode !== null || child.signalCode !== null || child.pid === undefined) return;
+  if (process.platform === 'win32') {
+    spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }).on('error', () => child.kill());
+    return;
+  }
+  try {
+    // It was started as the head of its own process group (see fetchSong).
+    process.kill(-child.pid, 'SIGTERM');
+  } catch {
+    child.kill();
+  }
+}
+
 let lastUpdate = Date.now();
 let updating;
 
@@ -212,11 +285,17 @@ function reasonFrom(stderr, code) {
   return (error ? error.slice('ERROR:'.length).trim() : lines.at(-1)) || `yt-dlp stopped with code ${code}`;
 }
 
+/** How long an upload form may be used before a new one is asked for: well before it runs out. */
+function usableUntil(upload) {
+  const seconds = Number(upload.expiresInSeconds);
+  return seconds > 0 ? Date.now() + Math.max(seconds - 300, seconds / 2) * 1000 : Infinity;
+}
+
 /**
  * Downloads one request with yt-dlp and uploads the audio as it arrives. Resolves to how it went:
  * 'done', 'dropped' (Nimbus no longer wants it), or throws with the reason it failed.
  */
-async function fetchSong(config, ytDlp, job) {
+async function fetchSong(config, ytDlp, ffmpeg, job) {
   const report = (body) => call(config, '/report', { jobId: job.id, ...body });
   // Only ever a YouTube video or a YouTube search, whatever is asked for.
   if (!WATCH_URL.test(job.target) && !job.target.startsWith('ytsearch1:')) throw new Error('That is not something this helper fetches.');
@@ -233,15 +312,17 @@ async function fetchSong(config, ytDlp, job) {
       '--use-extractors', 'youtube,youtube:search',
       // Node, which is running this script, also runs YouTube's player code for yt-dlp.
       '--js-runtimes', `node:${process.execPath}`,
+      ...(ffmpeg.location ? ['--ffmpeg-location', ffmpeg.location] : []),
       '--quiet',
       '--no-simulate',
       // Which video it turned out to be, written just before its download starts.
-      '--print-to-file', 'before_dl:%(.{id,title,duration})j', detailsFile,
+      '--print-to-file', 'before_dl:%(.{id,title,duration,is_live})j', detailsFile,
       '-f', 'bestaudio/best',
       '-o', '-',
       '--', job.target,
     ],
-    { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
+    // On its own process group where there are such things, so it can be ended with whatever it starts.
+    { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, detached: process.platform !== 'win32' },
   );
   running.set(job.id, child);
   let stderr = '';
@@ -252,53 +333,102 @@ async function fetchSong(config, ytDlp, job) {
   });
 
   let title;
+  let live = false;
   let dropped = false;
+  let cannotFetchLive = false;
   const tellWhichVideo = async () => {
-    if (title !== undefined || !existsSync(detailsFile)) return;
+    if (title !== undefined || cannotFetchLive || !existsSync(detailsFile)) return;
     const text = readFileSync(detailsFile, 'utf8').split('\n').find((line) => line.trim().startsWith('{'));
     if (!text) return;
     const details = JSON.parse(text);
-    title = details.title ?? details.id;
-    say(`Fetching "${title}"`);
-    const answer = await report({ kind: 'found', videoId: details.id, title, ...(details.duration ? { durationSeconds: details.duration } : {}) });
+    live = details.is_live === true;
+    if (live && !ffmpeg.available) {
+      // yt-dlp is about to fail on it. Say why in words that help.
+      cannotFetchLive = true;
+      stopChild(child);
+      return;
+    }
+    // yt-dlp adds the date and time to a live stream's title.
+    title = (live ? String(details.title ?? '').replace(/ \d{4}-\d{2}-\d{2} \d{2}:\d{2}$/, '') : details.title) || details.id;
+    say(`Fetching "${title}"${live ? ' (a live stream: it is sent for as long as someone is listening)' : ''}`);
+    const answer = await report({
+      kind: 'found',
+      videoId: details.id,
+      title,
+      ...(details.duration ? { durationSeconds: details.duration } : {}),
+      ...(live ? { live: true } : {}),
+    });
     if (answer.ok === false) dropped = true;
   };
   // Nimbus is told which video it is as soon as yt-dlp knows, without waiting for the first audio.
   const watching = setInterval(() => void tellWhichVideo().catch(() => undefined), 150);
 
+  let upload = job.upload;
+  let uploadUntil = usableUntil(upload);
+  /** Asks for a new upload form. The old one stays in use if Nimbus can't be asked (or doesn't know how yet). */
+  const renewUpload = async () => {
+    const answer = await call(config, '/upload', { jobId: job.id });
+    if (answer.upload === null) dropped = true;
+    else if (answer.upload) {
+      upload = answer.upload;
+      uploadUntil = usableUntil(upload);
+    }
+  };
   let chunks = 0;
   let bytes = 0;
   let pending = [];
   let pendingBytes = 0;
+  let lastSent;
   const send = async (buffer) => {
     await tellWhichVideo();
+    if (dropped || cannotFetchLive) return;
+    // A long video or a live stream outlasts its first form.
+    if (Date.now() >= uploadUntil) await renewUpload().catch(() => undefined);
     if (dropped) return;
-    await uploadChunk(job.upload, chunks, buffer);
+    try {
+      await uploadChunk(upload, chunks, buffer);
+    } catch (error) {
+      // The form may have run out early: one more try with a new one.
+      await renewUpload().catch(() => undefined);
+      if (dropped) return;
+      await uploadChunk(upload, chunks, buffer).catch(() => Promise.reject(error));
+    }
     chunks++;
     bytes += buffer.length;
+    lastSent = Date.now();
     const answer = await report({ kind: 'progress', chunks });
     if (answer.ok === false) dropped = true;
   };
+  const over = () => dropped || cannotFetchLive;
 
   try {
     for await (const piece of child.stdout) {
+      lastSent ??= Date.now();
       pending.push(piece);
       pendingBytes += piece.length;
-      while (pendingBytes >= CHUNK_BYTES && !dropped) {
+      while (pendingBytes >= CHUNK_BYTES && !over()) {
         const all = Buffer.concat(pending, pendingBytes);
         await send(all.subarray(0, CHUNK_BYTES));
         pending = [all.subarray(CHUNK_BYTES)];
         pendingBytes = all.length - CHUNK_BYTES;
       }
-      if (dropped) break;
+      // Coming in slowly (a live stream, a poor connection): send what there is.
+      if (pendingBytes > 0 && !over() && Date.now() - lastSent >= FLUSH_MS) {
+        await send(Buffer.concat(pending, pendingBytes));
+        pending = [];
+        pendingBytes = 0;
+      }
+      if (over()) break;
     }
-    if (!dropped && pendingBytes > 0) await send(Buffer.concat(pending, pendingBytes));
+    if (!over() && pendingBytes > 0) await send(Buffer.concat(pending, pendingBytes));
     if (dropped) {
-      child.kill();
+      stopChild(child);
       say(`Stopped fetching ${title ? `"${title}"` : 'that'}: it's no longer wanted.`);
       return 'dropped';
     }
     const { code, error } = await exited;
+    await tellWhichVideo().catch(() => undefined);
+    if (cannotFetchLive || (!ffmpeg.available && /ffmpeg could not be found/i.test(stderr))) throw new Error(LIVE_NEEDS_FFMPEG);
     if (error) throw new Error(`yt-dlp could not be started: ${error.message}`);
     if (code !== 0) throw new Error(reasonFrom(stderr, code));
     // Nothing came out and nothing went wrong: the search found nothing.
@@ -310,25 +440,27 @@ async function fetchSong(config, ytDlp, job) {
   } finally {
     clearInterval(watching);
     running.delete(job.id);
-    if (child.exitCode === null) child.kill();
+    stopChild(child);
     rmSync(detailsFile, { force: true });
   }
 }
 
-async function handle(config, ytDlp, job) {
+async function handle(config, ytDlp, ffmpeg, job) {
   try {
-    await fetchSong(config, ytDlp, job);
+    await fetchSong(config, ytDlp, ffmpeg, job);
   } catch (error) {
     const reason = error.message || 'something went wrong';
     if (reason === NOTHING_FOUND) say(`Nothing found for ${job.target.replace(/^ytsearch1:/, '"')}".`);
+    else if (reason === LIVE_NEEDS_FFMPEG) say("Could not fetch that: it's a live stream, and there is no ffmpeg here to fetch it with (see the README).");
     else say(`Could not fetch that: ${reason}`);
     await call(config, '/report', { jobId: job.id, kind: 'failed', error: reason }).catch(() => undefined);
     // Most failures that aren't "no such video" mean YouTube changed something: a newer yt-dlp usually fixes it.
-    if (reason !== NOTHING_FOUND && !/unavailable|private|not available in your country|removed/i.test(reason)) {
+    if (reason !== NOTHING_FOUND && reason !== LIVE_NEEDS_FFMPEG && !/unavailable|private|not available in your country|removed/i.test(reason)) {
       await updateYtDlp(ytDlp, 'a song failed');
     }
   }
 }
+
 
 // ---------------------------------------------------------------------------
 
@@ -352,10 +484,11 @@ async function main() {
 
   const config = loadConfig(argument);
   const ytDlp = await ensureYtDlp();
+  const ffmpeg = await ensureFfmpeg();
   const stop = () => {
     if (stopping) process.exit(0);
     stopping = true;
-    for (const child of running.values()) child.kill();
+    for (const child of running.values()) stopChild(child);
     say('Stopped. Music needs a helper running, so start this again when you want it.');
     process.exit(0);
   };
@@ -371,7 +504,7 @@ async function main() {
       if (!connected) say('Connected to Nimbus. Waiting for someone to ask for a song...');
       connected = true;
       waitMs = Number(answer.pollMs) > 0 ? Number(answer.pollMs) : 3_000;
-      if (answer.job) void handle(config, ytDlp, answer.job);
+      if (answer.job) void handle(config, ytDlp, ffmpeg, answer.job);
       if (Date.now() - lastUpdate > UPDATE_EVERY_MS && running.size === 0) void updateYtDlp(ytDlp, 'daily check');
     } catch (error) {
       if (connected) say(`Lost touch with Nimbus (${error.message}). Trying again...`);

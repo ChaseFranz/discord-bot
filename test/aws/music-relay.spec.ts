@@ -116,6 +116,28 @@ describe.each(stores)('music helper records ($name)', ({ open }) => {
     expect(await board.get(GUILD, job.id)).toMatchObject({ status: 'done', error: null });
   });
 
+  it('notes when the bot is listening to a job that is still going', async () => {
+    const job = await board.post(GUILD, 'ytsearch1:lofi hip hop radio', T0);
+    expect(job.listenedAt).toBeNull();
+    // Nobody holds it yet: there is nothing to listen to.
+    await board.listening(GUILD, job.id, T0 + 500);
+    expect(await board.get(GUILD, job.id)).toMatchObject({ listenedAt: null });
+
+    await board.claim(GUILD, ALICE, T0 + 1_000, T0);
+    const track = { videoId: 'rFZHOHl-L8A', title: 'lofi hip hop radio', live: true };
+    await board.report(GUILD, job.id, ALICE.userId, { kind: 'found', track }, T0 + 2_000);
+    await board.listening(GUILD, job.id, T0 + 3_000);
+    expect(await board.get(GUILD, job.id)).toMatchObject({ status: 'found', track, listenedAt: T0 + 3_000 });
+    await board.listening(GUILD, job.id, T0 + 23_000);
+    expect(await board.get(GUILD, job.id)).toMatchObject({ listenedAt: T0 + 23_000 });
+
+    // Over: it is left as it was.
+    await board.abandon(GUILD, job.id, 'no longer wanted', T0 + 30_000);
+    await board.listening(GUILD, job.id, T0 + 43_000);
+    expect(await board.get(GUILD, job.id)).toMatchObject({ status: 'failed', listenedAt: T0 + 23_000 });
+    await board.listening(GUILD, 'no-such-job', T0);
+  });
+
   it('records a failure, and lets the bot give up on a job', async () => {
     const failing = await board.post(GUILD, 'ytsearch1:one', T0);
     await board.claim(GUILD, ALICE, T0, T0);
@@ -140,6 +162,14 @@ describe.each(stores)('music helper records ($name)', ({ open }) => {
       );
       admin.destroy();
       expect(stored.Item?.expiresAt?.N).toBe(String(Math.floor(T0 / 1000) + 86_400));
+
+      // A stream that is being listened to is kept for a day from then, however long it has been going.
+      await board.claim(GUILD, ALICE, T0, T0);
+      await board.listening(GUILD, job.id, T0 + 7_200_000);
+      const later = localAdminClient();
+      const kept = await later.send(new GetItemCommand({ TableName: opened.table, Key: { pk: { S: `MUSICJOB#${GUILD}` }, sk: { S: `JOB#${job.id}` } } }));
+      later.destroy();
+      expect(kept.Item?.expiresAt?.N).toBe(String(Math.floor(T0 / 1000) + 7_200 + 86_400));
     });
   }
 });
@@ -154,6 +184,7 @@ describe('S3AudioRelayStore', () => {
     expect(target.url).toBe('https://nimbus-music-relay.s3.us-east-1.amazonaws.com/');
     expect(target.keyPrefix).toBe(`music/${GUILD}/job-1/`);
     expect(target.maxChunkBytes).toBe(4 * 1024 * 1024);
+    expect(target.expiresInSeconds).toBe(30 * 60);
     // The helper supplies the key for each chunk itself.
     expect(target.fields).not.toHaveProperty('key');
     const policy = JSON.parse(Buffer.from(target.fields.Policy!, 'base64').toString('utf8')) as { conditions: unknown[]; expiration: string };

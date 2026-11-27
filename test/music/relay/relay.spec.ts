@@ -1,11 +1,11 @@
 import { HelperApi } from '../../../src/music/relay/HelperApi.js';
-import { HELPER_POLL_MS, HelperDesk } from '../../../src/music/relay/HelperDesk.js';
-import { HelperTrackSource, NOTHING_FOUND } from '../../../src/music/relay/HelperTrackSource.js';
+import { HELPER_POLL_MS, HelperDesk, LISTENING_EVERY_MS, UNHEARD_MS } from '../../../src/music/relay/HelperDesk.js';
+import { HelperTrackSource, LIVE_NEEDS_FFMPEG, NOTHING_FOUND } from '../../../src/music/relay/HelperTrackSource.js';
 import { MemoryAudioRelayStore, MemoryHelperRegistry, MemoryMusicJobBoard } from '../../../src/music/relay/memory.js';
 import { chunkName, type MusicJob } from '../../../src/music/relay/ports.js';
 import { formatSetupCode, formatToken, hashSecret, newSecret, parseSetupCode, parseToken, secretMatches } from '../../../src/music/relay/tokens.js';
 import { MusicError } from '../../../src/music/types.js';
-import { fakeClock, silentLogger } from '../../helpers.js';
+import { fakeClock, settle, silentLogger } from '../../helpers.js';
 
 const GUILD = '1083158655429509190';
 const ALICE = '100000000000000001';
@@ -49,6 +49,8 @@ describe('music helpers', () => {
   let api: HelperApi;
   /** Things the "helper" does once the clock reaches a time, run from the track source's waits. */
   let later: Array<{ at: number; run: () => Promise<unknown> | unknown }>;
+  /** What the track source does again and again (saying it is listening to a live stream), run the same way. */
+  let repeating: Array<{ everyMs: number; next: number; run: () => void; stopped: boolean }>;
   let source: HelperTrackSource;
 
   beforeEach(() => {
@@ -59,14 +61,25 @@ describe('music helpers', () => {
     desk = new HelperDesk({ guildId: GUILD, registry, clock, apiUrl: API, guideUrl: GUIDE });
     api = new HelperApi({ guildId: GUILD, registry, board, store, clock, logger: silentLogger() });
     later = [];
+    repeating = [];
     source = new HelperTrackSource({
       guildId: GUILD, desk, board, store, clock, checkEveryMs: 250,
       sleep: async (ms) => {
         clock.advance(ms);
+        for (const timer of repeating) {
+          for (; !timer.stopped && timer.next <= clock(); timer.next += timer.everyMs) timer.run();
+        }
         for (const step of later.filter((candidate) => candidate.at <= clock())) {
           later.splice(later.indexOf(step), 1);
           await step.run();
         }
+      },
+      every: (everyMs, run) => {
+        const timer = { everyMs, next: clock() + everyMs, run, stopped: false };
+        repeating.push(timer);
+        return () => {
+          timer.stopped = true;
+        };
       },
     });
   });
@@ -170,7 +183,9 @@ describe('music helpers', () => {
         job: {
           id: job.id,
           target: 'ytsearch1:jelly fish jam',
-          upload: { url: 'https://bucket.example/', fields: { policy: 'memory' }, keyPrefix: `music/${GUILD}/${job.id}/`, maxChunkBytes: 4 * 1024 * 1024 },
+          upload: {
+            url: 'https://bucket.example/', fields: { policy: 'memory' }, keyPrefix: `music/${GUILD}/${job.id}/`, maxChunkBytes: 4 * 1024 * 1024, expiresInSeconds: 1_800,
+          },
         },
       });
       expect(await board.get(GUILD, job.id)).toMatchObject({ status: 'claimed', helper: { userId: ALICE, userName: 'Alice' } });
@@ -205,6 +220,64 @@ describe('music helpers', () => {
       for (const bad of [{ kind: 'found', videoId: '../../etc', title: 'x' }, { kind: 'found', videoId: 'oWqAf4eex14' }, { kind: 'progress', chunks: -1 }, { kind: 'done', chunks: 1.5 }, { kind: 'failed' }, { kind: 'dance' }]) {
         expect((await post('/report', { token: alice, jobId: job.id, ...bad })).status).toBe(400);
       }
+    });
+  });
+
+  describe('a live stream', () => {
+    /** Alice's helper has taken a job and found that it is a live stream. */
+    const streaming = async () => {
+      const token = await setUp(ALICE, 'Alice');
+      const job = await board.post(GUILD, 'ytsearch1:lofi hip hop radio', clock());
+      await post('/poll', { token });
+      expect((await post('/report', { token, jobId: job.id, kind: 'found', videoId: 'rFZHOHl-L8A', title: 'lofi hip hop radio', live: true })).body).toEqual({ ok: true });
+      return { token, job };
+    };
+
+    it('is sent for as long as the bot says it is listening, and stopped once it has not for a while', async () => {
+      const { token, job } = await streaming();
+      // Being found counts as the first "listening": the bot has a while to start playing it.
+      expect(await board.get(GUILD, job.id)).toMatchObject({ track: { live: true }, listenedAt: clock() });
+      clock.advance(UNHEARD_MS - 1_000);
+      expect((await post('/report', { token, jobId: job.id, kind: 'progress', chunks: 5 })).body).toEqual({ ok: true });
+      await board.listening(GUILD, job.id, clock());
+      clock.advance(UNHEARD_MS - 1_000);
+      expect((await post('/report', { token, jobId: job.id, kind: 'progress', chunks: 9 })).body).toEqual({ ok: true });
+
+      // The call ended without saying so: nobody is listening, and the helper is told to stop.
+      clock.advance(2_000);
+      expect((await post('/report', { token, jobId: job.id, kind: 'progress', chunks: 12 })).body).toEqual({ ok: false });
+      expect(await board.get(GUILD, job.id)).toMatchObject({ status: 'failed', error: 'nobody was listening any more', chunks: 9 });
+    });
+
+    it('is the only kind of job that has to be listened to: a song fetched ahead of its turn is not stopped', async () => {
+      const token = await setUp(ALICE, 'Alice');
+      const job = await board.post(GUILD, 'ytsearch1:a three hour mix', clock());
+      await post('/poll', { token });
+      await post('/report', { token, jobId: job.id, kind: 'found', videoId: 'oWqAf4eex14', title: 'a three hour mix' });
+      expect(await board.get(GUILD, job.id)).toMatchObject({ listenedAt: null });
+      clock.advance(10 * 60_000);
+      expect((await post('/report', { token, jobId: job.id, kind: 'progress', chunks: 400 })).body).toEqual({ ok: true });
+    });
+
+    it('gives its helper a new upload form while it is going, and nobody else', async () => {
+      const { token, job } = await streaming();
+      const sam = await setUp(SAM, 'Sam');
+      const issued = store.issued;
+      clock.advance(20 * 60_000);
+      await board.listening(GUILD, job.id, clock());
+      expect((await post('/upload', { token, jobId: job.id })).body).toEqual({
+        upload: { url: 'https://bucket.example/', fields: { policy: 'memory' }, keyPrefix: `music/${GUILD}/${job.id}/`, maxChunkBytes: 4 * 1024 * 1024, expiresInSeconds: 1_800 },
+      });
+      expect(store.issued).toBe(issued + 1);
+      expect((await post('/upload', { token: sam, jobId: job.id })).body).toEqual({ upload: null });
+      expect((await post('/upload', { token, jobId: 'no-such-job' })).body).toEqual({ upload: null });
+      expect((await post('/upload', { token })).status).toBe(400);
+
+      // Not once nobody is listening, and not once it is over.
+      clock.advance(UNHEARD_MS + 1_000);
+      expect((await post('/upload', { token, jobId: job.id })).body).toEqual({ upload: null });
+      expect(await board.get(GUILD, job.id)).toMatchObject({ status: 'failed', error: 'nobody was listening any more' });
+      expect(store.issued).toBe(issued + 1);
     });
   });
 
@@ -341,6 +414,98 @@ describe('music helpers', () => {
       expect(await board.get(GUILD, whole.job.id)).toMatchObject({ status: 'done', error: null });
       // Nothing to do for a track this source has no audio on its way for.
       await source.discard({ title: 'from somewhere else', url: 'https://www.youtube.com/watch?v=oWqAf4eex14' });
+    });
+
+    it('says it is listening to a live stream for as long as it plays, and stops saying so when it is closed', async () => {
+      const token = await running();
+      let job!: { id: string };
+      inMs(500, async () => {
+        job = await take(token);
+        await post('/report', { token, jobId: job.id, kind: 'found', videoId: 'rFZHOHl-L8A', title: 'lofi hip hop radio', live: true });
+        upload(job, 0, 'one ');
+        await post('/report', { token, jobId: job.id, kind: 'progress', chunks: 1 });
+      });
+      const track = (await source.resolve('lofi hip hop radio'))!;
+      expect(track).toMatchObject({ title: 'lofi hip hop radio', handle: job.id });
+      expect(track.durationSeconds).toBeUndefined();
+
+      // The stream comes in a part every five seconds, for two minutes: longer than it would be left unheard.
+      for (let part = 1; part <= 24; part++) {
+        inMs(part * 5_000, async () => {
+          upload(job, part, `${part} `);
+          expect((await post('/report', { token, jobId: job.id, kind: 'progress', chunks: part + 1 })).body).toEqual({ ok: true });
+        });
+      }
+      const stream = await source.open(track);
+      const heard: string[] = [];
+      const listenedAt: number[] = [];
+      for await (const chunk of stream) {
+        heard.push(String(chunk));
+        const at = (await board.get(GUILD, job.id))!.listenedAt!;
+        if (listenedAt.at(-1) !== at) listenedAt.push(at);
+        if (heard.length === 25) break; // skipped: the stream is closed
+      }
+      expect(heard.join('')).toBe(`one ${Array.from({ length: 24 }, (_, index) => `${index + 1} `).join('')}`);
+      // Said at once, then every twenty seconds.
+      expect(listenedAt.length).toBeGreaterThanOrEqual(6);
+      expect(listenedAt.slice(1).map((at, index) => at - listenedAt[index]!)).toEqual(Array(listenedAt.length - 1).fill(LISTENING_EVERY_MS));
+      // Closed: it says so no more, and what stops the helper is the track leaving the queue.
+      await settle();
+      expect(repeating.every((timer) => timer.stopped)).toBe(true);
+      const at = clock();
+      await settle();
+      expect(clock()).toBe(at); // and it has stopped looking for more
+      await source.discard(track);
+      expect((await post('/report', { token, jobId: job.id, kind: 'progress', chunks: 26 })).body).toEqual({ ok: false });
+    });
+
+    it('asks again for a song that was given up on while it waited its turn, and lets go of the right one afterwards', async () => {
+      const token = await running();
+      let first!: { id: string };
+      inMs(500, async () => {
+        first = await take(token);
+        await post('/report', { token, jobId: first.id, kind: 'found', videoId: 'rFZHOHl-L8A', title: 'lofi hip hop radio', live: true });
+      });
+      const track = (await source.resolve('lofi hip hop radio'))!;
+      // It waits in the queue behind other songs: nobody listens, so its helper is told to stop.
+      clock.advance(UNHEARD_MS + 1_000);
+      await post('/poll', { token });
+      expect((await post('/report', { token, jobId: first.id, kind: 'progress', chunks: 30 })).body).toEqual({ ok: false });
+
+      // Its turn comes: it is fetched afresh, from where the stream is now.
+      let second!: { id: string; target: string };
+      inMs(500, async () => {
+        second = await take(token);
+        await post('/report', { token, jobId: second.id, kind: 'found', videoId: 'rFZHOHl-L8A', title: 'lofi hip hop radio', live: true });
+        upload(second, 0, 'live now');
+        await post('/report', { token, jobId: second.id, kind: 'progress', chunks: 1 });
+      });
+      const stream = await source.open(track);
+      expect(second.target).toBe('https://www.youtube.com/watch?v=rFZHOHl-L8A');
+      expect(second.id).not.toBe(first.id);
+      expect(track.handle).toBe(second.id);
+      for await (const chunk of stream) {
+        expect(String(chunk)).toBe('live now');
+        break;
+      }
+      await source.discard(track);
+      expect(await board.get(GUILD, second.id)).toMatchObject({ status: 'failed', error: 'no longer wanted' });
+    });
+
+    it('explains a live stream its helper has no way to fetch', async () => {
+      const token = await running();
+      inMs(500, async () => post('/report', { token, jobId: (await take(token)).id, kind: 'failed', error: LIVE_NEEDS_FFMPEG }));
+      await expect(source.resolve('lofi hip hop radio')).rejects.toThrow(
+        `That's a live stream, and Alice's music helper has no ffmpeg, which fetching one takes. How to add it: ${GUIDE}`,
+      );
+      // A helper from before live streams passes on what yt-dlp said.
+      await post('/poll', { token });
+      inMs(500, async () =>
+        post('/report', { token, jobId: (await take(token)).id, kind: 'failed', error: 'm3u8 download detected but ffmpeg could not be found. Please install' }),
+      );
+      await expect(source.resolve('lofi hip hop radio')).rejects.toThrow(
+        `That's a live stream, and Alice's music helper is too old to play those. The newer one is here: ${GUIDE}`,
+      );
     });
 
     it('asks a helper again for a track it has no audio on its way for', async () => {
