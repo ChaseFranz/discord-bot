@@ -22,7 +22,8 @@ import type { UsageMeter } from '../usage/UsageService.js';
 import type { Clock } from '../util/time.js';
 import { MusicArbiter, type PausablePlayer, type PlayerStatus } from './MusicArbiter.js';
 import { captureUtterance, type CaptureOptions, type CapturedUtterance } from './SpeechCapture.js';
-import { SpeechQueue, type SpokenReply } from './SpeechQueue.js';
+import { openReplySpeech, type ReplySpeech } from './ReplySpeech.js';
+import { SpeechQueue } from './SpeechQueue.js';
 
 export interface VoiceSessionDeps {
   logger: Logger;
@@ -44,13 +45,16 @@ interface PreparedAudio {
   discard(): void;
 }
 
-/** A reply spoken sentence by sentence; see SpeechQueue. */
-export interface ReplySpeech {
-  /** Speaks another piece of the reply after the ones already added. */
-  say(text: string): void;
-  cancel(): void;
-  readonly cancelled: boolean;
-  finished(): Promise<void>;
+/** What a listening session reports. Only `utterance` is required. */
+export interface VoiceListener {
+  /** Someone finished saying something and it has been transcribed. */
+  utterance(utterance: CapturedUtterance): void;
+  /** Someone is talking right now; `audioMs` is how much their current utterance holds so far. */
+  speaking?(userId: string, audioMs: number): void;
+  /** What someone has said so far, before they have finished. */
+  partial?(userId: string, text: string): void;
+  /** Someone stopped being listened to. `heard` is false when nothing came of it (noise, or nothing intelligible). */
+  captureEnded?(userId: string, heard: boolean): void;
 }
 
 const SPEECH_TIMEOUT_MS = 2 * 60_000;
@@ -103,6 +107,8 @@ export class VoiceSession {
         play: (audio) => this.playSpeech(audio),
         stop: () => this.speechPlayer.stop(true),
         discard: (audio) => audio.discard(),
+        pause: () => this.speechPlayer.pause(true),
+        resume: () => this.speechPlayer.unpause(),
       },
       { started: () => this.beginSpeech(), idle: () => this.endSpeech() },
       deps.logger,
@@ -228,20 +234,20 @@ export class VoiceSession {
   // Speech in
   // -------------------------------------------------------------------------
 
-  /** Starts capturing each person's speech; `onUtterance` gets every transcribed utterance. */
-  startListening(onUtterance: (utterance: CapturedUtterance) => void): void {
+  /** Starts capturing each person's speech; `listener` hears about it as it happens. */
+  startListening(listener: VoiceListener): void {
     if (this.speakingListener) return;
-    const listener = (userId: string) => {
+    const onStart = (userId: string) => {
       if (this.activeCaptures.has(userId) || this.destroyed) return;
       const member = this.currentChannel.guild.members.cache.get(userId);
       if (member?.user.bot) return;
       // Claim the slot before the (usually instant) admission check so a second 'start' can't race it.
       const controller = new AbortController();
       this.activeCaptures.set(userId, controller);
-      void this.capture(userId, controller, onUtterance);
+      void this.capture(userId, controller, listener);
     };
-    this.speakingListener = listener;
-    this.connection.receiver.speaking.on('start', listener);
+    this.speakingListener = onStart;
+    this.connection.receiver.speaking.on('start', onStart);
   }
 
   stopListening(): void {
@@ -256,14 +262,12 @@ export class VoiceSession {
     this.activeCaptures.get(userId)?.abort();
   }
 
-  private async capture(
-    userId: string,
-    controller: AbortController,
-    onUtterance: (utterance: CapturedUtterance) => void,
-  ): Promise<void> {
+  private async capture(userId: string, controller: AbortController, listener: VoiceListener): Promise<void> {
+    let heard = false;
+    const live = () => !this.destroyed && !controller.signal.aborted;
     try {
       if (!(await this.deps.admitSpeaker(this.guildId, userId))) return;
-      if (controller.signal.aborted || this.destroyed) return;
+      if (!live()) return;
       const utterance = await captureUtterance({
         receiver: this.connection.receiver,
         userId,
@@ -273,12 +277,31 @@ export class VoiceSession {
         logger: this.deps.logger,
         signal: controller.signal,
         onAudioSent: (seconds) => this.deps.meter.recordTranscription(this.guildId, seconds),
+        onAudio: (audioMs) => {
+          if (live()) this.notify(() => listener.speaking?.(userId, audioMs));
+        },
+        onPartial: (text) => {
+          if (live()) this.notify(() => listener.partial?.(userId, text));
+        },
       });
-      if (utterance && !this.destroyed && !controller.signal.aborted) onUtterance(utterance);
+      if (utterance && live()) {
+        heard = true;
+        listener.utterance(utterance);
+      }
     } catch (error) {
       this.deps.logger.warn(`Speech capture failed for ${userId}: ${describeError(error)}`);
     } finally {
       if (this.activeCaptures.get(userId) === controller) this.activeCaptures.delete(userId);
+      if (!this.destroyed) this.notify(() => listener.captureEnded?.(userId, heard));
+    }
+  }
+
+  /** A listener that throws must not break the capture that called it. */
+  private notify(call: () => void): void {
+    try {
+      call();
+    } catch (error) {
+      this.deps.logger.warn(`A voice listener failed: ${describeError(error)}`);
     }
   }
 
@@ -318,22 +341,40 @@ export class VoiceSession {
    * the one before it plays.
    */
   openReply(): ReplySpeech {
-    const reply: SpokenReply = this.speech.openReply();
-    return {
-      say: (text) => {
-        if (!this.destroyed) reply.add('part of a reply', () => this.synthesize(text));
-      },
-      cancel: () => reply.cancel(),
-      get cancelled() {
-        return reply.cancelled;
-      },
-      finished: () => reply.finished(),
-    };
+    return openReplySpeech(this.speech, (text) => this.synthesize(text), () => !this.destroyed);
   }
 
   /** Stops the current utterance and drops anything queued. Returns whether it was talking. */
   stopSpeaking(): boolean {
     return this.speech.stopAll();
+  }
+
+  /** Freezes speech mid-word (someone has started talking over it) until resumeSpeaking(). */
+  pauseSpeaking(): void {
+    this.speech.pause();
+  }
+
+  resumeSpeaking(): void {
+    this.speech.resume();
+  }
+
+  get speechPaused(): boolean {
+    return this.speech.paused;
+  }
+
+  /**
+   * Says a few words next, ahead of anything waiting: a short "one moment" while a reply is playing.
+   * Resolves true once they have been said, false if they never were (everything was stopped first).
+   */
+  async interject(text: string): Promise<boolean> {
+    if (this.destroyed) return false;
+    let said = false;
+    await this.speech.enqueueNext('an acknowledgement', () => this.synthesize(text), {
+      started: () => {
+        said = true;
+      },
+    });
+    return said;
   }
 
   private async synthesize(text: string): Promise<PreparedAudio> {

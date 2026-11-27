@@ -123,7 +123,6 @@ export class MentionChat {
     ]);
     const reply = await services.assistant.respond({
       scope: { guildId: message.guildId, userId: message.author.id },
-      modality: 'text',
       userDisplayName: member.displayName,
       text: parts.join('\n'),
       images,

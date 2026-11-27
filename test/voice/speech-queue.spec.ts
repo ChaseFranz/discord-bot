@@ -17,6 +17,12 @@ class FakeSink implements AudioSink<string> {
   discard(audio: string): void {
     this.events.push(`discard ${audio}`);
   }
+  pause(): void {
+    this.events.push('pause');
+  }
+  resume(): void {
+    this.events.push('resume');
+  }
   finish(): void {
     const finish = this.finishCurrent;
     this.finishCurrent = undefined;
@@ -116,5 +122,98 @@ describe('SpeechQueue', () => {
     expect(sink.events).toEqual(['play good']);
     sink.finish();
     await reply.finished();
+  });
+
+  describe('pausing', () => {
+    it('freezes the piece that is playing and carries on from there', async () => {
+      const reply = queue.openReply();
+      reply.add('one', instant('one'));
+      reply.add('two', instant('two'));
+      await settle();
+      queue.pause();
+      queue.pause(); // already paused: nothing more happens
+      expect(queue.paused).toBe(true);
+      expect(sink.events).toEqual(['play one', 'pause']);
+      queue.resume();
+      expect(sink.events).toEqual(['play one', 'pause', 'resume']);
+      sink.finish();
+      await settle();
+      expect(sink.events).toEqual(['play one', 'pause', 'resume', 'play two']);
+    });
+
+    it('starts nothing new while paused, however ready it is', async () => {
+      queue.pause();
+      const reply = queue.openReply();
+      reply.add('one', instant('one'));
+      await settle();
+      expect(sink.events).toEqual([]);
+      expect(hooks).toEqual([]);
+      expect(queue.busy).toBe(true);
+      queue.resume();
+      await settle();
+      expect(sink.events).toEqual(['play one']);
+      expect(hooks).toEqual(['started']);
+    });
+
+    it('can drop a paused reply and speak another in its place', async () => {
+      const old = queue.openReply();
+      old.add('old one', instant('old one'));
+      old.add('old two', instant('old two'));
+      await settle();
+      queue.pause();
+      old.cancel();
+      const corrected = queue.openReply();
+      corrected.add('new', instant('new'));
+      await settle();
+      expect(sink.events).toEqual(['play old one', 'pause', 'stop', 'discard old two']);
+      queue.resume();
+      await settle();
+      expect(sink.events.at(-1)).toBe('play new');
+    });
+
+    it('ends the pause when everything is stopped', async () => {
+      const reply = queue.openReply();
+      reply.add('one', instant('one'));
+      await settle();
+      queue.pause();
+      expect(queue.stopAll()).toBe(true);
+      expect(queue.paused).toBe(false);
+      void queue.enqueue('later', instant('later'));
+      await settle();
+      expect(sink.events).toEqual(['play one', 'pause', 'stop', 'play later']);
+    });
+  });
+
+  it('reports what happened to each piece: played, cut off, or never played', async () => {
+    const heard: string[] = [];
+    const track = (name: string) => ({ started: () => heard.push(`${name} started`), ended: (how: string) => heard.push(`${name} ${how}`) });
+    const reply = queue.openReply();
+    reply.add('one', instant('one'), track('one'));
+    reply.add('two', instant('two'), track('two'));
+    reply.add('three', instant('three'), track('three'));
+    await settle();
+    sink.finish();
+    await settle();
+    expect(heard).toEqual(['one started', 'one played', 'two started']);
+    reply.cancel();
+    await settle();
+    expect(heard).toEqual(['one started', 'one played', 'two started', 'three dropped', 'two cut']);
+    reply.add('four', instant('four'), track('four'));
+    expect(heard.at(-1)).toBe('four dropped');
+  });
+
+  it('plays an interjection next, ahead of what is waiting', async () => {
+    const reply = queue.openReply();
+    reply.add('one', instant('one'));
+    reply.add('two', instant('two'));
+    await settle();
+    void queue.enqueueNext('ack', instant('ack'));
+    void queue.enqueueNext('second ack', instant('second ack'));
+    for (let clip = 0; clip < 3; clip++) {
+      sink.finish();
+      await settle();
+    }
+    // Interjections go ahead of what was waiting, in the order they were made.
+    expect(sink.events).toEqual(['play one', 'play ack', 'play second ack', 'play two']);
   });
 });

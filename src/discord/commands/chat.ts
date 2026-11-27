@@ -50,7 +50,6 @@ export const chatCommand: BotCommand = {
     try {
       reply = await services.assistant.respond({
         scope: { guildId: context.guildId, userId: context.userId },
-        modality: 'text',
         userDisplayName: context.displayName,
         text: prompt,
         channelName: context.channelName,

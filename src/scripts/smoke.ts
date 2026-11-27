@@ -6,15 +6,18 @@
  *   npm run smoke -- --claude                 # Claude only (a few cents at most)
  *   npm run smoke -- --aws                    # Polly + Transcribe only (fractions of a cent)
  *
- * Claude: seeds a fake voice transcript, then asks questions that need the memory tools, checks a
- * second request reads the prompt cache, runs spoken-style turns on the voice model (streamed and
- * split into sentences as they would be spoken), sets and lists a reminder, recaps the seeded call,
- * and prints the estimated cost of it all.
+ * Claude: seeds a fake voice transcript, then types questions that need the memory tools and checks a
+ * second request reads the prompt cache. Then a call on the voice model, streamed and split into
+ * sentences as they would be spoken: two people asking at once, a line meant for someone else, a
+ * follow-up without the name, a correction mid-reply, and a reminder. Last, it recaps the seeded
+ * call and prints the estimated cost of it all.
  * AWS: synthesises a sentence with Polly and transcribes it back with Transcribe streaming.
  */
 import dotenv from 'dotenv';
 import { PollyClient, SynthesizeSpeechCommand } from '@aws-sdk/client-polly';
 import { Assistant } from '../assistant/Assistant.js';
+import { CallConversation } from '../assistant/CallConversation.js';
+import type { LineAddress } from '../assistant/prompts.js';
 import { ToolRegistry } from '../assistant/tools/ToolRegistry.js';
 import { createMusicToolProvider } from '../assistant/tools/musicTools.js';
 import { createVoiceToolProvider } from '../assistant/tools/voiceTools.js';
@@ -46,6 +49,11 @@ dotenv.config({ quiet: true });
 
 const GUILD = 'smoke-guild';
 const USER = 'smoke-user';
+
+interface Person {
+  id: string;
+  name: string;
+}
 
 /**
  * The process environment for loadConfig, with placeholders for settings this test doesn't use.
@@ -127,48 +135,86 @@ async function smokeClaude(): Promise<void> {
     assistantName: config.assistant.name, timeZone: config.assistant.timeZone, routes: buildRoutes(config), memories, usage,
   });
   const scope = { guildId: GUILD, userId: USER };
+  const smoke: Person = { id: USER, name: 'Smoke' };
+  const sam: Person = { id: 'id-Sam', name: 'Sam' };
+  const alex: Person = { id: 'id-Alex', name: 'Alex' };
+  const name = config.assistant.name;
 
-  const ask = async (label: string, modality: 'text' | 'voice', text: string) => {
-    logger.info(`--- ${label}: ${text}`);
-    // Spoken turns stream: show each sentence as it would be handed to text-to-speech.
+  /** A typed message from Smoke, in their own thread. */
+  const type = async (label: string, text: string) => {
+    logger.info(`--- typed, ${label}: ${text}`);
     const started = Date.now();
-    const pieces: string[] = [];
-    const chunker = new SentenceChunker((piece) => {
-      pieces.push(piece);
-      logger.info(`  [would start speaking after ${Date.now() - started} ms] ${piece}`);
-    });
-    const reply = await assistant.respond({
-      scope, modality, userDisplayName: 'Smoke', text, channelName: modality === 'voice' ? 'General' : 'bot-chat',
-      userVoiceChannelId: modality === 'voice' ? 'vc1' : undefined, userVoiceChannelName: modality === 'voice' ? 'General' : undefined,
-      textChannelId: modality === 'voice' ? 'vc1' : 'bot-chat',
-      ...(modality === 'voice' ? { onText: (delta: string) => chunker.push(delta) } : {}),
-    });
-    chunker.flush();
-    logger.info(`=== ${reply.model} [${reply.outcome}${reply.silent ? ', silent' : ''}] after ${Date.now() - started} ms: ${reply.text}`);
-    if (modality === 'voice') logger.info(`  (${pieces.length} spoken piece${pieces.length === 1 ? '' : 's'})`);
+    const reply = await assistant.respond({ scope, userDisplayName: smoke.name, text, channelName: 'bot-chat', textChannelId: 'bot-chat' });
+    logger.info(`=== ${reply.model} [${reply.outcome}] after ${Date.now() - started} ms: ${reply.text}`);
     if (reply.sources.length > 0) logger.info(`sources: ${reply.sources.map((s) => s.url).join(', ')}`);
   };
 
-  await ask('text 1 (needs memory search)', 'text', 'What trip did Sam suggest when we were in voice chat the other day, and what did they say about price?');
-  await ask('text 2 (should read the prompt cache)', 'text', 'Thanks. Remind me what we just talked about, in one sentence.');
-  await ask(`voice (${config.claude.voice.model})`, 'voice', `${config.assistant.name}, when did Sam say we need to book by?`);
+  // A call: everyone shares one conversation, and each turn answers what was said to the assistant
+  // since its last one. Replies stream: each sentence is shown as it would be handed to text-to-speech.
+  const call = new CallConversation(config.assistant.timeZone);
+  const hear = (who: Person, text: string, address: LineAddress = 'named') => {
+    logger.info(`  ${who.name}${address === 'named' ? '' : ` (${address})`}: ${text}`);
+    call.hear({ speakerId: who.id, speakerName: who.name, text, at: Date.now(), address });
+  };
+  const turn = async (label: string, askers: Array<[Person, string]>) => {
+    const started = Date.now();
+    let pieces = 0;
+    const chunker = new SentenceChunker((piece) => {
+      pieces++;
+      logger.info(`  [would start speaking after ${Date.now() - started} ms] ${piece}`);
+    });
+    const reply = await assistant.respondInCall({
+      guildId: GUILD, conversation: call, askers: askers.map(([who, said]) => ({ ...who, said })),
+      channelId: 'vc1', channelName: 'General', peoplePresent: [alex, sam, smoke], musicStatus: 'nothing playing',
+      onText: (delta) => chunker.push(delta),
+    });
+    chunker.flush();
+    const how = `${reply.outcome}${reply.silent ? ', said nothing' : ''}${reply.stopped ? ', told to stop' : ''}`;
+    logger.info(`=== ${label}: ${reply.model} [${how}] after ${Date.now() - started} ms, ${pieces} spoken piece${pieces === 1 ? '' : 's'}: ${reply.text}`);
+    return reply;
+  };
+  const ask = (label: string, who: Person, text: string, address: LineAddress = 'named') => {
+    logger.info(`--- in the call, ${label}`);
+    hear(who, text, address);
+    return turn(label, [[who, text]]);
+  };
 
-  // Long-term notes: Claude should decide to save these, and they should reach another person's turn.
-  await ask('text 3 (should save notes)', 'text', "Please remember that I'm vegetarian and my favourite game is Hades.");
+  await type('1 (needs memory search)', 'What trip did Sam suggest when we were in voice chat the other day, and what did they say about price?');
+  await type('2 (should read the prompt cache)', 'Thanks. Remind me what we just talked about, in one sentence.');
+  await ask(`one question (${config.claude.voice.model})`, smoke, `${name}, when did Sam say we need to book by?`);
+
+  // Long-term notes: Claude should decide to save these, and they should reach a call with that person in it.
+  await type('3 (should save notes)', "Please remember that I'm vegetarian and my favourite game is Hades.");
   const saved = await memories.listAbout(GUILD, [USER], 10);
   logger.info(`Notes saved about Smoke: ${saved.map((m) => `#${m.id} ${m.text}`).join(' | ') || 'none'}`);
-  const samAsks = `${config.assistant.name}, what should we cook for Smoke tonight?`;
-  logger.info(`--- voice from Sam, with Smoke in the call: ${samAsks}`);
-  const forSam = await assistant.respond({
-    scope: { guildId: GUILD, userId: 'id-Sam' }, modality: 'voice', userDisplayName: 'Sam', text: samAsks,
-    channelName: 'General', userVoiceChannelId: 'vc1', userVoiceChannelName: 'General',
-    peoplePresent: [{ id: USER, name: 'Smoke' }, { id: 'id-Sam', name: 'Sam' }],
-  });
-  logger.info(`=== ${forSam.model} [${forSam.outcome}]: ${forSam.text}`);
+  await ask('someone else asks about Smoke (should use the notes)', sam, `${name}, what should we cook for Smoke tonight?`);
 
-  // Reminders: Claude should call set_reminder, then list_reminders.
-  await ask('voice (should set a reminder)', 'voice', `${config.assistant.name}, remind me in ten minutes to take the pizza out.`);
-  await ask('text (should list reminders)', 'text', 'What reminders do I have?');
+  // Two people ask at nearly the same moment: one reply should answer both, by name.
+  logger.info('--- in the call, two people ask at once');
+  const capital = `${name}, what's the capital of Australia?`;
+  const players = `${name}, and how many players are on the field for one soccer team?`;
+  hear(alex, capital);
+  hear(sam, players);
+  await turn('one reply for both', [[alex, capital], [sam, players]]);
+
+  // Right after a reply, without the name: one line is for someone else, the next is a real follow-up.
+  await ask('a line meant for someone else (should say nothing)', sam, 'Alex, did you remember to feed the cat?', 'maybe');
+  await ask('a follow-up without the name (should answer)', alex, 'and what about New Zealand?', 'maybe');
+
+  // Corrected while speaking: it should pick up from the correction, not start again.
+  const first = await ask('a question it will be interrupted on', smoke, `${name}, what's the weather usually like in Kyoto in the spring?`);
+  const [heard, ...unsaid] = first.text.split(/(?<=[.!?])\s+/);
+  call.note(`You were interrupted while speaking. Heard so far: "${heard ?? ''}" ${unsaid.length > 0 ? `Not yet said: "${unsaid.join(' ')}"` : 'Nothing else was left to say.'}`);
+  await ask('the correction (should continue from it)', smoke, 'no, sorry, I meant in the autumn', 'interrupting');
+
+  // Talked over, but nothing changes: it should carry on.
+  const second = await ask('another question it will be talked over on', alex, `${name}, give me three tips for packing light.`);
+  call.note(`You were interrupted while speaking. Heard so far: "${second.text.split(/(?<=[.!?])\s+/)[0] ?? ''}" Not yet said: "the rest of your reply"`);
+  await ask('someone agreeing out loud (should say nothing and carry on)', alex, 'mm-hm, yeah', 'interrupting');
+
+  // Reminders: Claude should call set_reminder for the person who asked, then list_reminders when they type.
+  await ask('should set a reminder', smoke, `${name}, remind me in ten minutes to take the pizza out.`);
+  await type('(should list reminders)', 'What reminders do I have?');
   const set = await reminders.listActive(GUILD, USER);
   const due = set.map((r) => `#${r.id} "${r.message}" due in ${Math.round((r.dueAt - Date.now()) / 60_000)} min`);
   logger.info(`Reminders stored: ${due.join(' | ') || 'none'}`);

@@ -1,10 +1,10 @@
 # Nimbus
 
-Nimbus is an Alexa-style assistant for your Discord voice calls, powered by Claude. It sits in a voice channel, follows the conversation, and answers whoever says its name ("Nimbus, …"). It keeps a separate conversation with each person, and it can look back over what the whole group said. You can also type to it with `/chat` or by @mentioning it. Your typed and spoken conversation is one thread, so it remembers both.
+Nimbus is an Alexa-style assistant for your Discord voice calls, powered by Claude. It sits in a voice channel, follows the conversation, and answers whoever says its name ("Nimbus, …"). In a call it talks with the group, not to one person at a time: it can answer two people in one breath, take a correction mid-sentence, and keep out of it when people are talking to each other. You can also type to it with `/chat` or by @mentioning it. That typed thread is your own, and what you asked it in calls is kept there too.
 
 - **Claude** handles the thinking: Claude Opus 5.5 for typed replies, Claude Haiku 5.5 for spoken replies, which need to be fast. Both can be changed in `.env`. It's reached through **Claude Platform on AWS**, so requests use your AWS credentials and show up on your AWS bill.
 - **AWS Transcribe** turns speech into text (streamed while people are still talking), and **AWS Polly** speaks the replies, sentence by sentence as Claude writes them.
-- **Conversations feel natural**: after Nimbus answers, you can keep talking for a few seconds without saying its name, and "Nimbus, stop" cuts it off instantly.
+- **Conversations feel natural**: after Nimbus answers, anyone can keep talking to it for a few seconds without saying its name. Talk over its answer and it pauses to hear you. "Nimbus, stop" cuts it off instantly.
 - An **MCP memory server** gives Claude tools to search and read past voice conversations, short recaps of past calls, and each person's own history. Old context is fetched when it's needed instead of always being stuffed into the prompt.
 - **Reminders and timers**, said out loud in the call or posted as a mention ("Nimbus, remind us at 9 to start the raid").
 - **Music** from YouTube, by slash command or by voice ("Nimbus, play some lo-fi"). Music pauses while the assistant talks.
@@ -16,12 +16,12 @@ Nimbus is an Alexa-style assistant for your Discord voice calls, powered by Clau
 ```text
 voice channel ─► each person's audio ─► AWS Transcribe ─► transcript line ─► SQLite (ambient transcript)
    (skipped for people who opted out)                           │
-                                         says "Nimbus", or a follow-up right after a reply?
+                                  says "Nimbus", or could be carrying on right after a reply?
                                                                 │ yes ("stop" is handled right here)
                                                                 ▼
-   last few minutes of the call ─┐
-   that person's thread ─────────┼─► Claude (Haiku) ◄─► tools: memory (MCP), music, reminders,
-   situation note ───────────────┘          │                  stop_speaking, web search
+   the call's conversation so far ─┐
+   notes about the people in it ───┼─► Claude (Haiku) ◄─► tools: memory (MCP), music, reminders,
+   situation note ─────────────────┘        │                  say_nothing, stop_speaking, web search
                                             ▼ streamed, one sentence at a time
                               AWS Polly ─► spoken in the channel ─► also saved to the transcript
 ```
@@ -30,14 +30,15 @@ When a call ends, Claude Haiku writes a short private recap of it, which Nimbus 
 
 ### Memory
 
-There are four kinds, all stored locally with SQLite:
+There are five kinds. All but the second are stored locally with SQLite:
 
-1. **Each person's thread** with the assistant (`data/bot.db`): typed and spoken turns, with tool calls. The most recent stretch is sent with every request. Older turns move out of view but stay stored and searchable. Images people attach are seen with that message only; the thread keeps a placeholder.
-2. **The ambient transcript** (`data/bot.db`): everything said in a voice channel while the bot is listening, including its own spoken replies, grouped into sessions.
-3. **Call recaps** (`data/bot.db`): when a call ends, Claude Haiku summarises it in about 120 words (who was there, topics, decisions and who said they'd do what). Recaps are for Nimbus's own use and aren't posted anywhere. Calls shorter than six lines aren't recapped. If the bot stops before writing one, it catches up on the next start.
-4. **Long-term notes about people** (`data/memories.db`, a separate database): short facts Nimbus saves when someone tells it something worth remembering, such as "Is vegetarian" or "Birthday: May 3", plus a few facts about the server itself.
+1. **Each person's thread** with the assistant (`data/bot.db`): what they typed, with tool calls, and a copy of what they asked in calls with the reply (turn the copies off with `VOICE_SAVE_TO_THREADS=false`). The most recent stretch is sent with every typed request. Older turns move out of view but stay stored and searchable. Images people attach are seen with that message only; the thread keeps a placeholder.
+2. **The call's conversation** (in memory, for as long as Nimbus is listening): everything said in the call in order, what Nimbus said back, and notes on what was actually heard of each reply. Everyone in the call shares it, and it's what Claude reads for every spoken turn.
+3. **The ambient transcript** (`data/bot.db`): everything said in a voice channel while the bot is listening, including its own spoken replies, grouped into sessions.
+4. **Call recaps** (`data/bot.db`): when a call ends, Claude Haiku summarises it in about 120 words (who was there, topics, decisions and who said they'd do what). Recaps are for Nimbus's own use and aren't posted anywhere. Calls shorter than six lines aren't recapped. If the bot stops before writing one, it catches up on the next start.
+5. **Long-term notes about people** (`data/memories.db`, a separate database): short facts Nimbus saves when someone tells it something worth remembering, such as "Is vegetarian" or "Birthday: May 3", plus a few facts about the server itself.
 
-With each spoken request, Claude sees the last few minutes of the call (`AMBIENT_CONTEXT_MINUTES`, default 3). Anything older it looks up with the memory tools when someone refers back to it:
+In a call, Claude sees the whole conversation since Nimbus started listening (in a very long call the oldest part drops out of view). Earlier calls, and what people typed, it looks up with the memory tools when someone refers back to them:
 
 | Tool | Used for |
 | --- | --- |
@@ -168,9 +169,25 @@ By voice: "Nimbus, play Bohemian Rhapsody", "Nimbus, skip this", "Nimbus, what d
 ### Talking to Nimbus
 
 - **The chime.** When Nimbus hears its name, it plays a short chime and pauses any music, so everyone knows it's thinking. The music comes back after the reply. Turn the chime off with `WAKE_SOUND_ENABLED=false`.
-- **Fast replies.** Nimbus starts speaking its first sentence while Claude is still writing the rest, and prepares each next sentence while the current one plays.
-- **Follow-ups.** For `FOLLOW_UP_SECONDS` (default 8) after Nimbus finishes answering you, you can carry on without its name ("and what about tomorrow?"). This only works for the person it just answered. If you were actually talking to someone else, Nimbus usually works that out and stays quiet. Set it to `0` to always require the name.
-- **Stop.** "Nimbus, stop" (or "never mind", "be quiet", "cancel"…) is handled on the spot, without asking Claude: it stops talking and drops any reply still being written. While it's answering you, plain "stop" works too. If it isn't talking, "Nimbus, stop" pauses the music; "Nimbus, resume" brings it back.
+- **Fast replies.** Nimbus starts on a request the moment you stop talking, speaks its first sentence while Claude is still writing the rest, and prepares each next sentence while the current one plays. Each reply logs where the time went (`Timing for …`).
+- **Several people at once.** If two people ask at almost the same moment, they get one reply that answers both by name. Nobody has heard the first answer yet, so Nimbus starts over with both questions.
+- **Pausing mid-sentence.** "Nimbus, what's the weather… in Chicago tomorrow?" is one question. If you carry on before Nimbus has started answering, it waits for you and answers the whole thing.
+- **Follow-ups.** For `FOLLOW_UP_SECONDS` (default 8) after Nimbus finishes a reply, anyone in the call can carry on without its name ("and what about tomorrow?"). Claude decides whether each such line was meant for it, and stays quiet when it wasn't. Set it to `0` to always require the name.
+- **Corrections.** Start talking while Nimbus is answering you and it pauses mid-word to listen. If what you said changes the answer, it picks up from there ("Oh, Saturday? Then…"). If it doesn't ("mm-hm"), it carries on from where it stopped.
+- **Waiting your turn.** Ask for something while Nimbus is answering someone else, and it says "one sec" between sentences, finishes, then answers everyone who asked.
+- **Stop.** "Nimbus, stop" (or "never mind", "be quiet", "cancel"…) is handled on the spot, without asking Claude, even before you've finished saying it: it stops talking and drops any reply still being written and anyone waiting. While it's answering you, plain "stop" works too. If it isn't talking, "Nimbus, stop" pauses the music; "Nimbus, resume" brings it back.
+
+These can be tuned in `.env` (on AWS, through the `BOT_SETTINGS` variable; see "Running on AWS"):
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `VOICE_FOLLOW_UPS` | `everyone` | Who can carry on without the name after a reply: `everyone`, only the `askers` it just answered, or `always` (every line is put to Claude, at any time, with no name needed; costs more and it may join in more than you'd like). |
+| `FOLLOW_UP_SECONDS` | `8` | How long after a reply that lasts. |
+| `VOICE_SILENCE_MS` | `600` | How long you must be quiet before Nimbus takes what you said as finished. Lower is faster; a pause longer than this splits a sentence in two, which Nimbus joins back together if it hasn't started answering. |
+| `VOICE_BARGE_IN` | `askers` | Whose voice pauses a reply: the `askers` it's answering, `everyone`, or `off` (it finishes, then turns to what was said). |
+| `VOICE_BARGE_IN_MS` | `500` | How much you must say before it pauses. Shorter sounds (a cough, "mm") don't count. |
+| `VOICE_ACKNOWLEDGE` | `true` | Say "one sec" to someone who asks while a reply to someone else is playing. |
+| `VOICE_SAVE_TO_THREADS` | `true` | Keep what each person asked in a call, and the reply, in their own typed thread. |
 
 ### Reminders and timers
 
@@ -242,6 +259,7 @@ It costs roughly **$5 a month** at about 3 hours of calls a day, on top of Claud
    | `CLAUDE_PROVIDER` | `anthropic` for now (uses the API key from step 1). Change it to `aws` and add `ANTHROPIC_AWS_WORKSPACE_ID` once Claude Platform on AWS is set up. |
    | `ALERT_EMAIL` | Optional: gets Lambda error alerts and the spending alert |
    | `MUSIC_ENABLED` | Optional: `true` turns music on. It's off on AWS by default, because YouTube blocks AWS addresses. |
+| `BOT_SETTINGS` | Optional: other settings from `.env.example` for the bot on AWS, as `NAME=value` pairs separated by commas or new lines, e.g. `VOICE_SILENCE_MS=500, VOICE_BARGE_IN=everyone`. They take effect at the next deploy. Not for secrets. |
 | `DAILY_BUDGET_USD`, `MONTHLY_BUDGET_USD` | Optional: the bot's daily cap (default $5) and the AWS Budgets alert (default $25) |
 
 3. Merge to `main` (or run the **Deploy** workflow by hand) and approve it. The first deploy takes about 10 minutes, mostly building the voice task image.
@@ -307,7 +325,8 @@ src/
   calls/                 the on-demand voice task: status record, orders queue, control, main loop
   config/                environment validation (zod)
   claude/                Claude client for the configured provider + startup check
-  assistant/             Claude agent loop, prompts, history sanitising, styles
+  assistant/             Claude agent loop for typed threads and for calls, the call's shared
+                         conversation, prompts, history sanitising, styles
     tools/               tool registry, MCP adapter, music + voice tools
   memory/                memory MCP server (+ standalone stdio entry)
   reminders/             reminder tools, repeat rules, scheduler, delivery
@@ -316,7 +335,8 @@ src/
   privacy/               per-person transcription choice
   storage/               repository ports; SQLite and DynamoDB implementations; in-code search
   speech/                STT/TTS ports + AWS adapters
-  voice/                 voice sessions, audio capture, speech queue, wake word, follow-ups and stop
+  voice/                 voice sessions, audio capture, speech queue, wake word, and the turn-taking
+                         that decides when to answer, start over, wait, pause or stop
   music/                 queue service + YouTube source
   discord/               client, command dispatch (Gateway and HTTPS), slash commands, @mention chat
   scripts/               smoke test, command registration, switching between AWS and a PC
