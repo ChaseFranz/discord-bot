@@ -72,8 +72,9 @@ The system prompt and tool list never change while the bot runs, so they're cach
 
 ### 1. Prerequisites
 
-- **Node.js 24.15+** (the built-in `node:sqlite` and the YouTube library need it)
+- **Node.js 24.15+** (for the built-in `node:sqlite`; yt-dlp also uses it to read YouTube's player)
 - **ffmpeg** on your `PATH` (decodes music and speech audio)
+- **yt-dlp** on your `PATH` for music, or set `YT_DLP_PATH`. Use a current release from <https://github.com/yt-dlp/yt-dlp/releases> (the standalone `yt-dlp_linux`, `yt-dlp_macos` or `yt-dlp.exe`); distribution packages are usually too old to keep up with YouTube. When music stops playing after YouTube changes something, a newer yt-dlp usually fixes it.
 - **Build tools** may be needed for `@discordjs/opus` if no prebuilt binary matches your platform
 
 ### 2. Discord application
@@ -290,7 +291,7 @@ Everything external sits behind a small interface (a "port"). The programs that 
 | Calls (`src/calls/voiceTask.ts`) | Handled in the one process | An on-demand Fargate task, given orders through SQS, with a status record in DynamoDB |
 | `SpeechToText` (`src/speech/ports.ts`) | AWS Transcribe streaming | same |
 | `TextToSpeech` | AWS Polly | same |
-| `TrackSource` (`src/music/types.ts`) | YouTube (`@distube/ytdl-core`) | same |
+| `TrackSource` (`src/music/types.ts`) | YouTube through yt-dlp (`src/music/YtDlpTrackSource.ts`) | same; the image pins a yt-dlp release |
 | Claude access (`src/claude/client.ts`) | Claude Platform on AWS (`AnthropicAws`), or the Claude API directly | same, through IAM roles instead of access keys |
 | Memory tools | MCP server in-process (`src/memory/inProcess.ts`) | same |
 | `ToolProvider` (`src/assistant/tools/types.ts`) | native tools + MCP adapter | same |

@@ -4,7 +4,7 @@ import { createVoiceToolProvider } from '../assistant/tools/voiceTools.js';
 import type { DiscordBot } from '../discord/DiscordBot.js';
 import { describeError } from '../logging/logger.js';
 import { MusicService } from '../music/MusicService.js';
-import { YouTubeTrackSource } from '../music/YouTubeTrackSource.js';
+import { YtDlpTrackSource } from '../music/YtDlpTrackSource.js';
 import { CallRecapper } from '../recaps/CallRecapper.js';
 import type { ReminderAlarm } from '../reminders/alarm.js';
 import { createReminderToolProvider } from '../reminders/reminderTools.js';
@@ -59,7 +59,14 @@ export async function buildCallStack(core: Core, bot: DiscordBot, alarm: Reminde
     autoLeaveMs: config.assistant.autoLeaveMinutes * 60_000,
     schedule: systemSchedule,
   });
-  const music = new MusicService(voice, new YouTubeTrackSource(), logger);
+  const tracks = new YtDlpTrackSource({ executable: config.music.ytDlpPath });
+  // Music needs yt-dlp; nothing else does, so a missing one is reported but not fatal.
+  try {
+    logger.info(`yt-dlp ${await tracks.version()} ready for music.`);
+  } catch (error) {
+    logger.error(`Music won't play until yt-dlp works: ${describeError(error)}`);
+  }
+  const music = new MusicService(voice, tracks, logger);
 
   const assistant = core.assistant([
     createMusicToolProvider(music),

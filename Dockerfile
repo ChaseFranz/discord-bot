@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # The voice task: the side of Nimbus that joins calls, run on AWS Fargate only while it's in one
 # (see src/aws/voiceTask.ts). Built and pushed by `cdk deploy` (infra/lib/nimbus-cloud-stack.ts).
 
@@ -18,6 +19,12 @@ FROM node:24-bookworm-slim
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
+# yt-dlp fetches YouTube audio for music, using this image's Node for YouTube's player code.
+# Pinned and checked: when /play stops working because YouTube changed something, move both the
+# version and the checksum to a newer release (https://github.com/yt-dlp/yt-dlp/releases, SHA2-256SUMS).
+ADD --chmod=755 --checksum=sha256:fb847a2e4a9ddc8cf5fcfb4bb7f42ba8969ecf72068def0278074f9d300bd13c \
+  https://github.com/yt-dlp/yt-dlp/releases/download/2026.11.23/yt-dlp_linux_aarch64 /usr/local/bin/yt-dlp
+RUN yt-dlp --version
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=build /app/package.json ./
