@@ -113,6 +113,8 @@ describe('VoiceConversationService', () => {
   /** Order of what the session and assistant were asked to do, outside of audio (see sink.events for that). */
   let events: string[];
   let logged: string[];
+  /** Each time a reply was told it had been written in full: what of it was still to be said then. */
+  let replyEnds: string[];
   let privacy: Record<string, PrivacyLevel>;
   let paused: boolean;
   let musicState: MusicStatus['state'];
@@ -142,11 +144,19 @@ describe('VoiceConversationService', () => {
       presentMembers: () => [{ id: 'u-alice', name: 'Alice' }, { id: 'u-cara', name: 'Cara' }, { id: 'u-sam', name: 'Sam' }],
       resolveMember: async (id: string) => members[id],
       speak: (text: string) => queue.enqueue('a reply', async () => text),
-      openReply: () =>
-        openReplySpeech(queue, async (text) => {
+      openReply: () => {
+        const speech = openReplySpeech(queue, async (text) => {
           await synthesis;
           return text;
-        }),
+        });
+        // Recorded, to check that every reply is told when it has been written in full.
+        const end = speech.end;
+        speech.end = () => {
+          replyEnds.push(speech.progress().unsaid.join(' ') || '(all said)');
+          end();
+        };
+        return speech;
+      },
       stopSpeaking: () => queue.stopAll(),
       pauseSpeaking: () => queue.pause(),
       resumeSpeaking: () => queue.resume(),
@@ -221,6 +231,7 @@ describe('VoiceConversationService', () => {
     scripts = [];
     events = [];
     logged = [];
+    replyEnds = [];
     privacy = {};
     paused = false;
     musicState = 'idle';
@@ -287,6 +298,15 @@ describe('VoiceConversationService', () => {
       turn.open();
       await settle();
       expect(played()).toEqual(['Hi.']);
+    });
+
+    it('tells the reply when it has been written in full, before it has all been said', async () => {
+      scripts.push(says('First sentence. ', 'Second one.'));
+      await hears('u-alice', 'Nimbus, two things');
+      // Straight away, with all of it still to be said: a speech stream needn't wait to see what follows the last sentence.
+      expect(replyEnds).toEqual(['First sentence. Second one.']);
+      await clipEnds(2);
+      expect(played()).toEqual(['First sentence.', 'Second one.']);
     });
 
     it('speaks each sentence as soon as it has been written', async () => {

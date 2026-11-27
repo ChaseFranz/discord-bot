@@ -652,6 +652,8 @@ export class VoiceConversationService implements CallListener {
       deps.logger.info(`Spoken reply used web sources: ${answer.sources.map((source) => source.url).join(', ')}`);
     }
 
+    // Written in full: the last of it needn't wait to see what follows.
+    turn.reply?.speech.end();
     const reply = turn.reply ?? this.carryOn(state, turn, onHold);
     // Said after anything that was already on its way out.
     if (failed) void session.speak('Sorry, something went wrong on my end.');
@@ -745,6 +747,7 @@ export class VoiceConversationService implements CallListener {
     reply.over = true;
     reply.onHold = false;
     if (how !== 'spoken') reply.speech.cancel();
+    else reply.speech.end();
     reply.wake?.();
     if (state.reply === reply) state.reply = undefined;
     const { heard, interrupted } = reply.speech.progress();

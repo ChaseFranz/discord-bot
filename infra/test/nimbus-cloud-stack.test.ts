@@ -60,6 +60,14 @@ test('gives Discord a public URL to the edge, which only knows the public key an
   }
 });
 
+test('lets the voice task transcribe and speak, including through a speech stream', () => {
+  const policies = Object.values(cloud.findResources('AWS::IAM::Policy')).filter((policy) => JSON.stringify(policy.Properties.Roles).includes('TaskRole'));
+  const actions = policies.flatMap((policy) => (policy.Properties.PolicyDocument.Statement as Array<{ Action: string | string[] }>).flatMap((statement) => [statement.Action].flat()));
+  for (const action of ['transcribe:StartStreamTranscription', 'polly:SynthesizeSpeech', 'polly:StartSpeechSynthesisStream']) {
+    assert.ok(actions.includes(action), `the task role can't ${action}`);
+  }
+});
+
 test('passes the token to the voice task as an ECS secret and sets the time zone everywhere', () => {
   cloud.hasResourceProperties('AWS::ECS::TaskDefinition', {
     ContainerDefinitions: [

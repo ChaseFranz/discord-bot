@@ -3,7 +3,7 @@
 Nimbus is an Alexa-style assistant for your Discord voice calls, powered by Claude. It sits in a voice channel, follows the conversation, and answers whoever says its name ("Nimbus, …"). In a call it talks with the group, not to one person at a time: it can answer two people in one breath, take a correction mid-sentence, and keep out of it when people are talking to each other. You can also type to it with `/chat` or by @mentioning it. That typed thread is your own, and what you asked it in calls is kept there too.
 
 - **Claude** handles the thinking: Claude Opus 5.5 for typed replies, Claude Haiku 5.5 for spoken replies, which need to be fast. Both can be changed in `.env`. It's reached through **Claude Platform on AWS**, so requests use your AWS credentials and show up on your AWS bill.
-- **AWS Transcribe** turns speech into text (streamed while people are still talking), and **AWS Polly** speaks the replies, sentence by sentence as Claude writes them.
+- **AWS Transcribe** turns speech into text (streamed while people are still talking), and **AWS Polly** speaks the replies as Claude writes them, through one stream per reply so the sentences flow into one another like speech.
 - **Conversations feel natural**: after Nimbus answers, anyone can keep talking to it for a few seconds without saying its name. Talk over its answer and it pauses to hear you. "Nimbus, stop" cuts it off instantly.
 - An **MCP memory server** gives Claude tools to search and read past voice conversations, short recaps of past calls, and each person's own history. Old context is fetched when it's needed instead of always being stuffed into the prompt.
 - **Reminders and timers**, said out loud in the call or posted as a mention ("Nimbus, remind us at 9 to start the raid").
@@ -127,6 +127,8 @@ To rotate the key, increase `accessKeySerial` in [infra/bin/nimbus.ts](infra/bin
 To limit Claude access to one workspace, replace `workspace/*` in the policy with that workspace's ARN, `arn:aws:aws-external-anthropic:<region>:<account-id>:workspace/<workspace-id>`. With `CLAUDE_PROVIDER=anthropic`, only the first statement is needed.
 
 Pick a region where your Polly voice supports your engine. The default, `Kenneth` with `generative`, works in `us-east-1`. The bot checks this at startup.
+
+**Streamed replies** (`POLLY_STREAMING`, on by default) send each reply to Polly through one two-way stream as Claude writes it, so its sentences come out as one flowing run of speech with natural pauses, instead of being made one by one. The first sentence is spoken as soon as it's written (the first sound comes about a quarter of a second later), and Polly waits to see what follows each later one, which makes for better phrasing. It needs the generative engine and `polly:StartSpeechSynthesisStream`, which the `NimbusBot` policy allows; an identity created before that was added needs the `Nimbus` stack deployed again. Without it, or with `POLLY_STREAMING=false`, replies are spoken a sentence at a time, as before.
 
 ### 5. Configure, build, run
 
@@ -311,7 +313,7 @@ Everything external sits behind a small interface (a "port"). The programs that 
 | `ReminderAlarm` (`src/reminders/alarm.ts`) | The in-process scheduler | EventBridge Scheduler waking a Lambda |
 | Calls (`src/calls/voiceTask.ts`) | Handled in the one process | An on-demand Fargate task, given orders through SQS, with a status record in DynamoDB |
 | `SpeechToText` (`src/speech/ports.ts`) | AWS Transcribe streaming | same |
-| `TextToSpeech` | AWS Polly | same |
+| `TextToSpeech` | AWS Polly, one two-way stream per reply (`src/voice/StreamedReply.ts` cuts its audio back into sentences) | same |
 | `TrackSource` (`src/music/types.ts`) | YouTube through yt-dlp (`src/music/YtDlpTrackSource.ts`) | YouTube through music helpers (`src/music/relay/`): requests and registrations in DynamoDB, audio relayed through S3, a small Lambda for helpers to talk to |
 | Claude access (`src/claude/client.ts`) | Claude Platform on AWS (`AnthropicAws`), or the Claude API directly | same, through IAM roles instead of access keys |
 | Memory tools | MCP server in-process (`src/memory/inProcess.ts`) | same |

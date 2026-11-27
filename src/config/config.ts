@@ -58,6 +58,7 @@ const envSchema = z.object({
   TRANSCRIBE_LANGUAGE_CODE: z.string().default('en-US'),
   POLLY_VOICE_ID: z.string().default('Kenneth'),
   POLLY_ENGINE: z.enum(POLLY_ENGINES).default('generative'),
+  POLLY_STREAMING: z.stringbool().default(true),
 
   MUSIC_ENABLED: z.stringbool().default(true),
   MUSIC_SOURCE: z.enum(MUSIC_SOURCES).default('direct'),
@@ -126,6 +127,8 @@ export interface AppConfig {
     transcribeLanguageCode: string;
     pollyVoiceId: string;
     pollyEngine: PollyEngine;
+    /** Speak each reply through one Polly stream, so its sentences flow together (generative engine only). */
+    pollyStreaming: boolean;
   };
   music: {
     /** Off: the music commands and Nimbus say music is turned off, and nothing is fetched from YouTube. */
@@ -239,6 +242,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       transcribeLanguageCode: e.TRANSCRIBE_LANGUAGE_CODE,
       pollyVoiceId: e.POLLY_VOICE_ID,
       pollyEngine: e.POLLY_ENGINE,
+      pollyStreaming: e.POLLY_STREAMING,
     },
     music: {
       enabled: e.MUSIC_ENABLED,

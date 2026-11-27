@@ -21,6 +21,7 @@ import type { SpeechToText, TextToSpeech } from '../speech/ports.js';
 import type { UsageMeter } from '../usage/UsageService.js';
 import type { Clock } from '../util/time.js';
 import { readAhead } from './audio.js';
+import { StreamedReply } from './StreamedReply.js';
 import { MusicArbiter, type PausablePlayer, type PlayerStatus } from './MusicArbiter.js';
 import { captureUtterance, type CaptureOptions, type CapturedUtterance } from './SpeechCapture.js';
 import { openReplySpeech, type ReplySpeech } from './ReplySpeech.js';
@@ -74,6 +75,12 @@ const SPEECH_HEAD_BYTES = 4_096;
  * player's default is five: fine for a file, too jumpy for audio still coming over the network).
  */
 const SPEECH_MAX_MISSED_FRAMES = 50;
+/**
+ * Silence after each piece of a streamed reply, in 20 ms frames. Pieces are cut in the reply's own
+ * pauses and follow one another at once, so only a little is needed (the default of five would
+ * stretch every pause between sentences by a tenth of a second).
+ */
+const STREAMED_PADDING_FRAMES = 2;
 
 /**
  * One guild's voice connection: speech in (per-person utterance capture), the assistant's audio out
@@ -93,6 +100,8 @@ export class VoiceSession {
   private speakingListener: ((userId: string) => void) | undefined;
   /** People being listened to right now, with a way to stop listening to each. */
   private readonly activeCaptures = new Map<string, AbortController>();
+  /** Replies being spoken through a speech stream: stopped if the session ends first. */
+  private readonly streamedReplies = new Set<StreamedReply<PreparedAudio>>();
 
   private readonly speech: SpeechQueue<PreparedAudio>;
   private speechActive = false;
@@ -234,6 +243,7 @@ export class VoiceSession {
     this.speech.stopAll();
     this.musicPlayer.stop(true);
     this.speechPlayer.stop(true);
+    for (const reply of [...this.streamedReplies]) reply.cancel();
     for (const listener of this.destroyedListeners.splice(0)) {
       try {
         listener();
@@ -356,7 +366,23 @@ export class VoiceSession {
    * the one before it plays.
    */
   openReply(): ReplySpeech {
-    return openReplySpeech(this.speech, (text) => this.synthesize(text), () => !this.destroyed);
+    const live = () => !this.destroyed;
+    // Through one speech stream where there is one, so the sentences flow into one another.
+    const stream = this.deps.tts.openStream?.();
+    if (!stream) return openReplySpeech(this.speech, (text) => this.synthesize(text), live);
+    const voice: StreamedReply<PreparedAudio> = new StreamedReply<PreparedAudio>(stream, {
+      // Each piece is a run of Opus packets cut from the stream, played as they are.
+      wrap: (packets) => ({
+        toResource: () => createAudioResource(packets, { inputType: StreamType.Opus, silencePaddingFrames: STREAMED_PADDING_FRAMES }),
+        discard: () => packets.destroy(),
+      }),
+      fallback: (text) => this.synthesize(text),
+      logger: this.deps.logger,
+      sent: (text) => this.deps.meter.recordSpeech(this.guildId, text.length),
+      closed: () => this.streamedReplies.delete(voice),
+    });
+    this.streamedReplies.add(voice);
+    return openReplySpeech(this.speech, voice, live);
   }
 
   /** Stops the current utterance and drops anything queued. Returns whether it was talking. */

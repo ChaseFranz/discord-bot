@@ -37,12 +37,18 @@ export interface CallStack {
 export async function buildCallStack(core: Core, bot: DiscordBot, alarm: ReminderAlarm, relay?: MusicRelay): Promise<CallStack> {
   const { config, logger, clock, storage, usage, privacy } = core;
   const stt = new TranscribeSpeechToText({ region: config.aws.region, languageCode: config.aws.transcribeLanguageCode });
-  const tts = new PollyTextToSpeech({ region: config.aws.region, voiceId: config.aws.pollyVoiceId, engine: config.aws.pollyEngine });
+  const tts = new PollyTextToSpeech({
+    region: config.aws.region,
+    voiceId: config.aws.pollyVoiceId,
+    engine: config.aws.pollyEngine,
+    streaming: config.aws.pollyStreaming,
+    logger,
+  });
   // Voice features need AWS; text chat doesn't, so a problem here is reported but not fatal.
   try {
     const problem = await tts.verify();
     if (problem) logger.error(problem);
-    else logger.info(`AWS Polly ready (${config.aws.pollyVoiceId}, ${config.aws.pollyEngine}, ${config.aws.region}).`);
+    else logger.info(`AWS Polly ready (${config.aws.pollyVoiceId}, ${config.aws.pollyEngine}${config.aws.pollyStreaming && config.aws.pollyEngine === 'generative' ? ', streamed replies' : ''}, ${config.aws.region}).`);
   } catch (error) {
     logger.error(`AWS check failed; voice replies and transcription won't work until this is fixed: ${describeError(error)}`);
   }

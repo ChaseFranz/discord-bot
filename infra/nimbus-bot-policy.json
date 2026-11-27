@@ -3,7 +3,7 @@
   "Statement": [
     {
       "Effect": "Allow",
-      "Action": ["transcribe:StartStreamTranscription", "polly:SynthesizeSpeech", "polly:DescribeVoices"],
+      "Action": ["transcribe:StartStreamTranscription", "polly:SynthesizeSpeech", "polly:StartSpeechSynthesisStream", "polly:DescribeVoices"],
       "Resource": "*"
     },
     {

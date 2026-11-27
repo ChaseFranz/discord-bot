@@ -39,8 +39,29 @@ export interface SynthesizedSpeech {
   format: 'ogg_opus' | 'mp3' | 'ogg_vorbis' | 'pcm';
 }
 
+/**
+ * Speech for text that is still being written: text goes in as it comes, and one continuous run
+ * of audio comes out as it is made, so that the sentences of a reply flow into one another.
+ */
+export interface SpeechStream {
+  /**
+   * Adds text after what was added before (separate pieces need their own spacing). With `flush`,
+   * everything so far is spoken now; otherwise the speaker may wait to see what follows, which
+   * makes for better phrasing.
+   */
+  write(text: string, flush?: boolean): void;
+  /** No more text: what is left is spoken, and then the audio ends. */
+  end(): void;
+  /** Stops at once. No more audio comes. */
+  abort(): void;
+  /** Ogg Opus at 48 kHz, one stream for everything written. It fails if the speech stream does. */
+  readonly audio: Readable;
+}
+
 /** Text-to-speech port. Implementations: AWS Polly (today). */
 export interface TextToSpeech {
   /** Resolves once audio has started to arrive (see SynthesizedSpeech.audio). */
   synthesize(text: string, signal?: AbortSignal): Promise<SynthesizedSpeech>;
+  /** A stream for one reply (see SpeechStream), where this implementation offers one right now. */
+  openStream?(): SpeechStream | undefined;
 }
