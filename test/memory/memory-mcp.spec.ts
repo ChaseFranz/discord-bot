@@ -6,18 +6,19 @@ import { SqliteMemoryRepository } from '../../src/storage/sqlite/SqliteMemoryRep
 import { SqliteTranscriptRepository } from '../../src/storage/sqlite/SqliteTranscriptRepository.js';
 
 function context(guildId: string, userId: string, userDisplayName = userId): ToolContext {
-  return { guildId, userId, userDisplayName, modality: 'text', voiceChannelId: undefined, signals: { silenceRequested: false } };
+  return { guildId, userId, userDisplayName, modality: 'text', voiceChannelId: undefined, textChannelId: 'chat', signals: { silenceRequested: false } };
 }
 
 describe('memory MCP server via McpToolProvider', () => {
   let db: SqliteDatabase;
   let memoryDb: SqliteDatabase;
   let memories: SqliteMemoryRepository;
+  let transcripts: SqliteTranscriptRepository;
   let memory: Awaited<ReturnType<typeof connectMemoryTools>>;
 
   beforeEach(async () => {
     db = openDatabase(':memory:');
-    const transcripts = new SqliteTranscriptRepository(db);
+    transcripts = new SqliteTranscriptRepository(db);
     const conversations = new SqliteConversationRepository(db);
 
     const home = await transcripts.startSession({ guildId: 'home', channelId: 'vc', channelName: 'General', startedAt: Date.UTC(2026, 10, 24, 20) });
@@ -88,9 +89,13 @@ describe('memory MCP server via McpToolProvider', () => {
     expect(result.content).not.toContain('secret');
   });
 
-  it('reads and lists sessions', async () => {
+  it('reads and lists sessions, with their recaps', async () => {
     const sessions = await memory.provider.callTool('list_voice_sessions', {}, context('home', 'alice'));
-    expect(sessions.content).toMatch(/session \d+: #General, started 2026-11-24T20:00:00Z, still active; 1 lines; speakers: Sam/);
+    expect(sessions.content).toMatch(/session \d+: #General, started 2026-11-24T20:00:00Z, still active; 1 lines; speakers: Sam$/);
+    await transcripts.endSession(1, Date.UTC(2026, 10, 24, 21));
+    await transcripts.setRecap(1, 'Sam suggested\na trip to Japan.', Date.UTC(2026, 10, 24, 21));
+    const recapped = await memory.provider.callTool('list_voice_sessions', {}, context('home', 'alice'));
+    expect(recapped.content).toContain('ended 2026-11-24T21:00:00Z; 1 lines; speakers: Sam\n  Recap: Sam suggested a trip to Japan.');
     const read = await memory.provider.callTool('read_voice_transcript', { since: '2026-11-24T00:00:00Z' }, context('home', 'alice'));
     expect(read.content).toContain('[2026-11-24T20:05:00Z] Sam: we should go to Japan next spring');
   });

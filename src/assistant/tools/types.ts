@@ -33,6 +33,8 @@ export interface ToolContext {
   modality: Modality;
   /** Voice channel the requesting person is in right now, if any. */
   voiceChannelId: string | undefined;
+  /** Text channel the request came from (a voice channel's own chat for spoken requests). */
+  textChannelId: string | undefined;
   signals: TurnSignals;
 }
 

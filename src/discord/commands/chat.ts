@@ -1,6 +1,7 @@
 import { EmbedBuilder, InteractionContextType, SlashCommandBuilder } from 'discord.js';
-import type { Source } from '../../assistant/history.js';
-import { chunkText, truncate } from '../../util/text.js';
+import { BudgetExceededError } from '../../assistant/Assistant.js';
+import { chunkText } from '../../util/text.js';
+import { budgetNote, budgetPausedMessage, formatSources, voiceContextOf } from '../textChat.js';
 import type { BotCommand } from '../types.js';
 
 const MIN_PROMPT = 3;
@@ -22,7 +23,7 @@ export const chatCommand: BotCommand = {
         .setMinLength(MIN_PROMPT)
         .setMaxLength(MAX_PROMPT),
     ),
-  usage: '/chat prompt: Tell me a funny joke about cats.',
+  usage: '/chat prompt: Tell me a funny joke about cats. (For longer messages or images, @mention the assistant instead.)',
 
   async execute(interaction, services) {
     const prompt = interaction.options.getString('prompt', true).trim();
@@ -34,24 +35,31 @@ export const chatCommand: BotCommand = {
       await interaction.editReply({ content: `Your prompt is too long! Please limit it to ${MAX_PROMPT} characters.` });
       return;
     }
+    if (services.usage.isPaused(interaction.guildId)) {
+      await interaction.editReply({ content: budgetPausedMessage(services, interaction.guildId) });
+      return;
+    }
 
     const member = interaction.member;
-    const voiceChannel = member.voice.channel;
     services.logger.info(`${interaction.user.tag} /chat: "${prompt}"`);
 
-    const reply = await services.assistant.respond({
-      scope: { guildId: interaction.guildId, userId: interaction.user.id },
-      modality: 'text',
-      userDisplayName: member.displayName,
-      text: prompt,
-      channelName: interaction.channel?.name,
-      userVoiceChannelId: voiceChannel?.id,
-      userVoiceChannelName: voiceChannel?.name,
-      peoplePresent: voiceChannel
-        ? [...voiceChannel.members.values()].filter((m) => !m.user.bot).map((m) => ({ id: m.id, name: m.displayName }))
-        : [],
-      musicStatus: services.music.describe(interaction.guildId),
-    });
+    let reply;
+    try {
+      reply = await services.assistant.respond({
+        scope: { guildId: interaction.guildId, userId: interaction.user.id },
+        modality: 'text',
+        userDisplayName: member.displayName,
+        text: prompt,
+        channelName: interaction.channel?.name,
+        textChannelId: interaction.channelId,
+        ...voiceContextOf(member),
+        musicStatus: services.music.describe(interaction.guildId),
+      });
+    } catch (error) {
+      if (!(error instanceof BudgetExceededError)) throw error;
+      await interaction.editReply({ content: budgetPausedMessage(services, interaction.guildId) });
+      return;
+    }
 
     let body = reply.text;
     if (body.length === 0) body = reply.silent ? '*(Stopped talking.)*' : '*(No reply.)*';
@@ -72,15 +80,12 @@ export const chatCommand: BotCommand = {
       return embed;
     });
 
-    await interaction.editReply({ embeds: [embeds[0]!] });
-    for (const embed of embeds.slice(1)) {
-      await interaction.followUp({ embeds: [embed] });
+    const note = budgetNote(services, interaction.guildId);
+    await interaction.editReply({ embeds: [embeds[0]!], ...(note && embeds.length === 1 ? { content: `-# ${note}` } : {}) });
+    for (const [index, embed] of embeds.slice(1).entries()) {
+      const last = index === embeds.length - 2;
+      await interaction.followUp({ embeds: [embed], ...(note && last ? { content: `-# ${note}` } : {}) });
     }
     services.logger.info(`Replied to ${interaction.user.tag} (${reply.model}, ${reply.outcome})`);
   },
 };
-
-function formatSources(sources: Source[]): string {
-  const lines = sources.slice(0, 8).map((source) => `- [${truncate(source.title.replace(/[[\]]/g, ''), 80)}](${source.url})`);
-  return `**Sources**\n${lines.join('\n')}`;
-}

@@ -16,7 +16,8 @@ export const helpCommand: BotCommand = {
       .setColor(0x0099ff)
       .setDescription(
         `Use **/join** and I'll listen in your voice channel. Say "${name}" to talk to me; ` +
-          'I remember what each of you tells me and can look back over what was said in the call.',
+          'I remember what each of you tells me and can look back over what was said in the call. ' +
+          `You can also type to me with **/chat**, or mention **@${name}** in any channel (images welcome).`,
       )
       .setFooter({ text: 'Use these commands to interact with the bot.' })
       .setTimestamp();

@@ -110,4 +110,34 @@ describe('SqliteTranscriptRepository', () => {
     expect(await repo.pruneBefore(10_000)).toBe(3);
     expect(await repo.listSessions('g1', { limit: 5 })).toEqual([]);
   });
+
+  it('stores recaps and finds ended sessions that still need one', async () => {
+    const long = await repo.startSession({ guildId: 'g1', channelId: 'vc1', channelName: 'General', startedAt: 10_000 });
+    for (let i = 0; i < 6; i++) {
+      await repo.appendSegment({
+        sessionId: long.id, guildId: 'g1', channelId: 'vc1', speakerId: 'u', speakerName: 'Sam', isAssistant: false,
+        text: `line ${i}`, startedAt: 10_000 + i, endedAt: 10_000 + i,
+      });
+    }
+    const short = await repo.startSession({ guildId: 'g1', channelId: 'vc1', channelName: 'General', startedAt: 20_000 });
+    await repo.appendSegment({
+      sessionId: short.id, guildId: 'g1', channelId: 'vc1', speakerId: 'u', speakerName: 'Sam', isAssistant: false,
+      text: 'hi', startedAt: 20_000, endedAt: 20_000,
+    });
+    const open = await repo.startSession({ guildId: 'g1', channelId: 'vc1', channelName: 'General', startedAt: 30_000 });
+
+    expect(await repo.sessionsNeedingRecap(0, 6)).toEqual([]); // still open
+    await repo.endSession(long.id, 15_000);
+    await repo.endSession(short.id, 25_000);
+    expect((await repo.sessionsNeedingRecap(0, 6)).map((s) => s.id)).toEqual([long.id]);
+    expect(await repo.sessionsNeedingRecap(11_000, 6)).toEqual([]);
+
+    await repo.setRecap(long.id, 'Sam read six lines.', 16_000);
+    expect(await repo.sessionsNeedingRecap(0, 6)).toEqual([]);
+    const listed = await repo.listSessions('g1', { limit: 10 });
+    expect(listed.find((s) => s.id === long.id)?.recap).toBe('Sam read six lines.');
+    expect(listed.find((s) => s.id === short.id)?.recap).toBeNull();
+    expect(await repo.getSession(open.id)).toMatchObject({ id: open.id, endedAt: null });
+    expect(await repo.getSession(999)).toBeUndefined();
+  });
 });

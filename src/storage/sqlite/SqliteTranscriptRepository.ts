@@ -34,6 +34,7 @@ interface SessionRow {
   channel_name: string;
   started_at: number;
   ended_at: number | null;
+  recap: string | null;
 }
 
 const PARTICIPANT_SEPARATOR = '\u001f';
@@ -166,7 +167,29 @@ export class SqliteTranscriptRepository implements TranscriptRepository {
       segmentCount: row.segment_count,
       lastActivityAt: row.last_activity_at,
       participants: row.participants ? row.participants.split(PARTICIPANT_SEPARATOR).sort() : [],
+      recap: row.recap && row.recap.trim().length > 0 ? row.recap : null,
     }));
+  }
+
+  async getSession(sessionId: number): Promise<VoiceSessionRecord | undefined> {
+    const row = this.db.prepare('SELECT * FROM voice_sessions WHERE id = ?').get(sessionId) as SessionRow | undefined;
+    return row ? toSession(row) : undefined;
+  }
+
+  async setRecap(sessionId: number, recap: string, recappedAt: number): Promise<void> {
+    this.db.prepare('UPDATE voice_sessions SET recap = ?, recapped_at = ? WHERE id = ?').run(recap, recappedAt, sessionId);
+  }
+
+  async sessionsNeedingRecap(since: number, minSegments: number): Promise<VoiceSessionRecord[]> {
+    const rows = this.db
+      .prepare(
+        `SELECT v.* FROM voice_sessions v
+          WHERE v.ended_at IS NOT NULL AND v.recap IS NULL AND v.started_at >= ?
+            AND (SELECT COUNT(*) FROM transcript_segments s WHERE s.session_id = v.id) >= ?
+          ORDER BY v.started_at ASC`,
+      )
+      .all(since, minSegments) as unknown as SessionRow[];
+    return rows.map(toSession);
   }
 
   async pruneBefore(cutoff: number): Promise<number> {

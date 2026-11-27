@@ -44,7 +44,13 @@ const envSchema = z.object({
   WAKE_WORD: z.string().optional(),
   WAKE_SOUND_ENABLED: z.stringbool().default(true),
   AMBIENT_CONTEXT_MINUTES: z.coerce.number().min(0).max(60).default(3),
+  FOLLOW_UP_SECONDS: z.coerce.number().min(0).max(60).default(8),
+  AUTO_LEAVE_MINUTES: z.coerce.number().min(0).max(24 * 60).default(2),
   TIMEZONE: z.string().optional(),
+
+  DAILY_BUDGET_USD: z.coerce.number().min(0).default(5),
+  TRANSCRIBE_USD_PER_MINUTE: z.coerce.number().min(0).optional(),
+  POLLY_USD_PER_MILLION_CHARACTERS: z.coerce.number().min(0).optional(),
 
   DATABASE_PATH: z.string().default('./data/bot.db'),
   MEMORY_DATABASE_PATH: z.string().default('./data/memories.db'),
@@ -92,7 +98,18 @@ export interface AppConfig {
     /** Play a chime when the assistant hears its name. */
     wakeSound: boolean;
     ambientContextMinutes: number;
+    /** How long after a spoken reply the same person can carry on without the wake word (0 = off). */
+    followUpSeconds: number;
+    /** Leave a voice channel after it has been empty this long (0 = stay). */
+    autoLeaveMinutes: number;
     timeZone: string;
+  };
+  usage: {
+    /** Daily spending cap per server in USD (0 = track spending without a cap). */
+    dailyBudgetUsd: number;
+    /** Price overrides for regions or plans that differ from the built-in us-east-1 list prices. */
+    transcribeUsdPerMinute: number | undefined;
+    pollyUsdPerMillionCharacters: number | undefined;
   };
   storage: {
     databasePath: string;
@@ -161,7 +178,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       wakeWord: (e.WAKE_WORD ?? e.ASSISTANT_NAME).toLowerCase(),
       wakeSound: e.WAKE_SOUND_ENABLED,
       ambientContextMinutes: e.AMBIENT_CONTEXT_MINUTES,
+      followUpSeconds: e.FOLLOW_UP_SECONDS,
+      autoLeaveMinutes: e.AUTO_LEAVE_MINUTES,
       timeZone,
+    },
+    usage: {
+      dailyBudgetUsd: e.DAILY_BUDGET_USD,
+      transcribeUsdPerMinute: e.TRANSCRIBE_USD_PER_MINUTE,
+      pollyUsdPerMillionCharacters: e.POLLY_USD_PER_MILLION_CHARACTERS,
     },
     storage: { databasePath: e.DATABASE_PATH, memoryDatabasePath: e.MEMORY_DATABASE_PATH, retentionDays: e.MEMORY_RETENTION_DAYS },
     logLevel: e.LOG_LEVEL,

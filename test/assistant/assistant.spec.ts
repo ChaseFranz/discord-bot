@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { BetaMessage, BetaMessageParam } from '@anthropic-ai/sdk/resources/beta/messages/messages';
 import { z } from 'zod';
-import { Assistant, type AssistantRoute, type MessagesApi } from '../../src/assistant/Assistant.js';
+import { Assistant, BudgetExceededError, type AssistantRoute, type MessagesApi } from '../../src/assistant/Assistant.js';
 import { NativeToolProvider, defineTool } from '../../src/assistant/tools/nativeTool.js';
 import { ToolRegistry } from '../../src/assistant/tools/ToolRegistry.js';
 import type { ToolContext } from '../../src/assistant/tools/types.js';
@@ -11,6 +11,7 @@ import { SqliteSettingsRepository } from '../../src/storage/sqlite/SqliteSetting
 import { openMemoryDatabase } from '../../src/storage/sqlite/database.js';
 import { SqliteMemoryRepository } from '../../src/storage/sqlite/SqliteMemoryRepository.js';
 import type { TranscriptSegment } from '../../src/storage/ports.js';
+import type { ClaudeUsageCounts } from '../../src/usage/UsageService.js';
 import { fakeClock, silentLogger } from '../helpers.js';
 
 type Params = Parameters<MessagesApi['stream']>[0];
@@ -33,23 +34,47 @@ function message(content: unknown[], stopReason: BetaMessage['stop_reason'], ext
   } as unknown as BetaMessage;
 }
 
-/** Scripted stand-in for client.beta.messages: returns queued responses and records requests. */
+/** A stream that sends some text and then breaks. */
+class BrokenStream {
+  constructor(
+    readonly partialText: string,
+    readonly error: Error,
+  ) {}
+}
+
+/**
+ * Scripted stand-in for client.beta.messages: returns queued responses and records requests.
+ * Text blocks of a scripted response are streamed to 'text' listeners before it resolves.
+ */
 class FakeMessages implements MessagesApi {
   readonly requests: Params[] = [];
-  private readonly queue: Array<BetaMessage | Error> = [];
+  private readonly queue: Array<BetaMessage | Error | BrokenStream> = [];
 
-  enqueue(...responses: Array<BetaMessage | Error>): this {
+  enqueue(...responses: Array<BetaMessage | Error | BrokenStream>): this {
     this.queue.push(...responses);
     return this;
   }
 
-  stream(body: Params) {
+  stream(body: Params, options?: { signal?: AbortSignal }) {
     this.requests.push(structuredClone(body));
     const next = this.queue.shift();
+    const listeners: Array<(delta: string) => void> = [];
     return {
+      on(_event: 'text', listener: (delta: string) => void) {
+        listeners.push(listener);
+        return this;
+      },
       finalMessage: async () => {
         if (!next) throw new Error('FakeMessages: no scripted response left');
+        if (options?.signal?.aborted) throw new Anthropic.APIUserAbortError();
         if (next instanceof Error) throw next;
+        if (next instanceof BrokenStream) {
+          for (const listener of listeners) listener(next.partialText);
+          throw next.error;
+        }
+        for (const block of next.content) {
+          if (block.type === 'text') for (const listener of listeners) listener(block.text);
+        }
         return next;
       },
     };
@@ -348,7 +373,7 @@ describe('Assistant', () => {
   });
 
   it('applies the per-person style from settings', async () => {
-    await settings.set(scope, { style: 'sarcastic' });
+    await settings.update(scope, { style: 'sarcastic' });
     fake.enqueue(message([{ type: 'text', text: 'Oh, wonderful.' }], 'end_turn'));
     await makeAssistant().respond({ scope, modality: 'text', userDisplayName: 'Alice', text: 'hi' });
     expect(String(fake.requests[0]!.messages[1]!.content)).toContain('Sarcastic and dry-witted');
@@ -375,5 +400,121 @@ describe('Assistant', () => {
     const secondMessages = fake.requests[1]!.messages as BetaMessageParam[];
     expect(secondMessages.slice(0, 2).map((m) => m.role)).toEqual(['user', 'assistant']);
     expect((await conversations.loadActive(scope)).map((m) => m.modality)).toEqual(['voice', 'voice', 'text', 'text']);
+  });
+
+  describe('streaming, cancelling, images, usage and the budget', () => {
+    it('passes the text on as it is written, and nothing after stop_speaking', async () => {
+      fake.enqueue(
+        message([{ type: 'text', text: 'Let me check. ' }, { type: 'tool_use', id: 'tu_1', name: 'stop_speaking', input: {} }], 'tool_use'),
+        message([{ type: 'text', text: 'should not be heard' }], 'end_turn'),
+      );
+      const heard: string[] = [];
+      const reply = await makeAssistant().respond({
+        scope, modality: 'voice', userDisplayName: 'Alice', text: 'never mind', onText: (delta) => heard.push(delta),
+      });
+      expect(heard).toEqual(['Let me check. ']);
+      expect(reply.silent).toBe(true);
+    });
+
+    it('does not re-issue a request after part of the reply was already passed on', async () => {
+      fake.enqueue(new BrokenStream('Hello th', new Error('socket hang up')), message([{ type: 'text', text: 'never sent' }], 'end_turn'));
+      const heard: string[] = [];
+      await expect(
+        makeAssistant().respond({ scope, modality: 'voice', userDisplayName: 'Alice', text: 'hi', onText: (delta) => heard.push(delta) }),
+      ).rejects.toThrow('socket hang up');
+      expect(heard).toEqual(['Hello th']);
+      expect(fake.requests).toHaveLength(1);
+    });
+
+    it('stops when aborted, mid-turn too, and stores nothing', async () => {
+      const before = new AbortController();
+      before.abort();
+      await expect(makeAssistant().respond({ scope, modality: 'voice', userDisplayName: 'Alice', text: 'hi', signal: before.signal })).rejects.toThrow();
+      expect(fake.requests).toHaveLength(0);
+
+      // Aborted while a tool runs ("stop" said mid-turn): no further model call, nothing stored.
+      const during = new AbortController();
+      const assistant = new Assistant({
+        messages: fake, conversations, settings, logger: silentLogger(), clock: fakeClock(), assistantName: 'Nimbus', timeZone: 'UTC', routes,
+        tools: new ToolRegistry([
+          new NativeToolProvider('test', [
+            defineTool({ name: 'slow_lookup', description: 'Look up.', input: z.object({}), run: async () => (during.abort(), 'done') }),
+          ]),
+        ]),
+      });
+      fake.enqueue(
+        message([{ type: 'tool_use', id: 'tu_1', name: 'slow_lookup', input: {} }], 'tool_use'),
+        message([{ type: 'text', text: 'too late' }], 'end_turn'),
+      );
+      await expect(
+        assistant.respond({ scope, modality: 'voice', userDisplayName: 'Alice', text: 'look it up', signal: during.signal }),
+      ).rejects.toThrow();
+      expect(fake.requests).toHaveLength(1);
+      expect(await conversations.loadActive(scope)).toEqual([]);
+    });
+
+    it('sends attached images with the turn but stores only a placeholder', async () => {
+      fake.enqueue(message([{ type: 'text', text: 'A cat!' }], 'end_turn'));
+      await makeAssistant().respond({
+        scope, modality: 'text', userDisplayName: 'Alice', text: 'what is this?',
+        images: [{ name: 'cat photo [1].png', mediaType: 'image/png', data: 'iVBORw0KGgo=' }],
+      });
+      const content = fake.requests[0]!.messages[0]!.content as unknown as Array<Record<string, unknown>>;
+      expect(content).toEqual([
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' } },
+        { type: 'text', text: 'what is this?\n[image: cat photo 1 .png]' },
+      ]);
+      expect((await conversations.loadActive(scope))[0]!.content).toEqual([{ type: 'text', text: 'what is this?\n[image: cat photo 1 .png]' }]);
+    });
+
+    it('meters every model call and refuses new turns once the budget is spent', async () => {
+      const recorded: Array<{ guildId: string; model: string; usage: ClaudeUsageCounts }> = [];
+      let paused = false;
+      const assistant = new Assistant({
+        messages: fake, conversations, settings, tools: new ToolRegistry([]), logger: silentLogger(), clock: fakeClock(),
+        assistantName: 'Nimbus', timeZone: 'UTC', routes,
+        usage: {
+          recordClaude: (guildId, model, usage) => recorded.push({ guildId, model, usage }),
+          recordTranscription: () => undefined,
+          recordSpeech: () => undefined,
+        },
+        budget: { isPaused: () => paused },
+      });
+      fake.enqueue(
+        message([{ type: 'text', text: 'ok' }], 'end_turn', {
+          usage: {
+            input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 5_000, cache_creation_input_tokens: 300,
+            cache_creation: { ephemeral_5m_input_tokens: 200, ephemeral_1h_input_tokens: 100 },
+            server_tool_use: { web_search_requests: 1, web_fetch_requests: 0 },
+          },
+        } as unknown as Partial<BetaMessage>),
+      );
+      await assistant.respond({ scope, modality: 'text', userDisplayName: 'Alice', text: 'news?' });
+      expect(recorded).toEqual([
+        {
+          guildId: 'g1',
+          model: 'claude-opus-5-5',
+          usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 5_000, cacheWrite5mTokens: 200, cacheWrite1hTokens: 100, webSearchRequests: 1 },
+        },
+      ]);
+
+      paused = true;
+      await expect(assistant.respond({ scope, modality: 'text', userDisplayName: 'Alice', text: 'more?' })).rejects.toBeInstanceOf(BudgetExceededError);
+      expect(fake.requests).toHaveLength(1);
+    });
+
+    it('marks follow-ups in the situation note and gives tools the text channel', async () => {
+      fake.enqueue(
+        message([{ type: 'tool_use', id: 'tu_1', name: 'lookup', input: { query: 'x' } }], 'tool_use'),
+        message([{ type: 'text', text: 'ok' }], 'end_turn'),
+      );
+      await makeAssistant().respond({
+        scope, modality: 'voice', userDisplayName: 'Alice', text: 'and tomorrow?', followUp: true, textChannelId: 'vc-chat',
+      });
+      const situation = fake.requests[0]!.messages.at(-1)!;
+      expect(situation.role).toBe('system');
+      expect(String(situation.content)).toContain("it's probably a follow-up");
+      expect(toolCalls[0]!.context.textChannelId).toBe('vc-chat');
+    });
   });
 });

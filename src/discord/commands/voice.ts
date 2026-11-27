@@ -1,4 +1,5 @@
 import { InteractionContextType, SlashCommandBuilder } from 'discord.js';
+import { budgetPausedMessage } from '../textChat.js';
 import type { BotCommand } from '../types.js';
 
 export const joinCommand: BotCommand = {
@@ -18,10 +19,14 @@ export const joinCommand: BotCommand = {
     const { name, wakeWord } = services.config.assistant;
     const retention = services.config.storage.retentionDays;
     const kept = retention > 0 ? `Transcripts are kept for ${retention} day${retention === 1 ? '' : 's'}.` : 'Transcripts are kept until deleted.';
+    const paused = services.usage.isPaused(interaction.guildId)
+      ? `\n⏸️ ${budgetPausedMessage(services, interaction.guildId)} Until then it won't listen or answer.`
+      : '';
     await interaction.editReply({
       content:
         `Joined **${channel.name}**. 🎙️ I'm transcribing this channel so I can follow the conversation. ` +
-        `Say "${wakeWord.charAt(0).toUpperCase()}${wakeWord.slice(1)}" to talk to ${name}. ${kept}`,
+        `Say "${wakeWord.charAt(0).toUpperCase()}${wakeWord.slice(1)}" to talk to ${name}. ${kept} ` +
+        `Rather not be transcribed? Use \`/privacy\`.${paused}`,
     });
   },
 };

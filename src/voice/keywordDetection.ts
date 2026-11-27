@@ -80,4 +80,36 @@ export class KeywordDetector {
     const words = normalizedInput.split(/[^\p{L}\p{N}]+/u).filter((word) => word.length > 0);
     return words.some((word) => this.levenshteinDistance(word, this.keyword) <= this.threshold);
   }
+
+  /**
+   * The input with the wake word taken out ("Nimbus, stop." -> ", stop."), or undefined when it
+   * doesn't contain the wake word. Removes every word that matches it, including a name split in
+   * two ("nim bus"). If the wake word is buried inside a longer word, the input comes back whole.
+   */
+  public stripKeyword(input: string): string | undefined {
+    if (!this.containsKeyword(input)) return undefined;
+    const tokens = [...input.matchAll(/[\p{L}\p{N}]+/gu)].map((match) => ({
+      start: match.index,
+      end: match.index + match[0].length,
+      word: match[0].toLowerCase(),
+    }));
+    const remove = new Set<number>();
+    tokens.forEach((token, index) => {
+      if (token.word === this.keyword || this.levenshteinDistance(token.word, this.keyword) <= this.threshold) remove.add(index);
+    });
+    for (let index = 0; index + 1 < tokens.length; index++) {
+      if (tokens[index]!.word + tokens[index + 1]!.word === this.keyword) remove.add(index).add(index + 1);
+    }
+    if (remove.size === 0) return input;
+    let out = '';
+    let cursor = 0;
+    tokens.forEach((token, index) => {
+      if (!remove.has(index)) return;
+      // The gap between two removed pieces of a split name ("nim bus") goes too.
+      const joinsPrevious = remove.has(index - 1) && cursor === tokens[index - 1]!.end && input.slice(cursor, token.start).trim() === '';
+      if (!joinsPrevious) out += input.slice(cursor, token.start);
+      cursor = token.end;
+    });
+    return out + input.slice(cursor);
+  }
 }

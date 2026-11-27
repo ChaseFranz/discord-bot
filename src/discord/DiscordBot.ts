@@ -1,6 +1,18 @@
-import { ActivityType, Client, Events, GatewayIntentBits, REST, Routes, type VoiceBasedChannel } from 'discord.js';
+import {
+  ActivityType,
+  Client,
+  Events,
+  GatewayIntentBits,
+  REST,
+  Routes,
+  type Message,
+  type VoiceBasedChannel,
+  type VoiceState,
+} from 'discord.js';
 import type { Logger } from '../logging/logger.js';
 import { describeError } from '../logging/logger.js';
+import type { ReminderMessenger } from '../reminders/ReminderDelivery.js';
+import type { VoiceStateChange } from '../voice/VoiceSessionManager.js';
 import type { InteractionRouter } from './InteractionRouter.js';
 import type { BotCommand } from './types.js';
 
@@ -11,13 +23,22 @@ export interface DiscordBotOptions {
   logger: Logger;
 }
 
-/** The Discord client: login, slash-command registration, and event wiring. */
-export class DiscordBot {
+export interface DiscordHandlers {
+  interactions: InteractionRouter;
+  /** Every message the bot can see (it only gets the content of ones that mention it). */
+  messages: (message: Message) => Promise<void>;
+  voiceStates: (change: VoiceStateChange) => void;
+}
+
+/** The Discord client: login, slash-command registration, event wiring, and posting messages. */
+export class DiscordBot implements ReminderMessenger {
   readonly client: Client;
 
   constructor(private readonly options: DiscordBotOptions) {
-    // Slash commands and voice only: no message-content (privileged) intent needed.
-    this.client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates] });
+    // No privileged intents: message content arrives only for messages that mention the bot.
+    this.client = new Client({
+      intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.GuildMessages],
+    });
   }
 
   /** Registers the commands in the configured guild (updates instantly, unlike global commands). */
@@ -29,10 +50,26 @@ export class DiscordBot {
   }
 
   /** Logs in and resolves once the client is ready. */
-  async start(router: InteractionRouter): Promise<void> {
+  async start(handlers: DiscordHandlers): Promise<void> {
     const { logger } = this.options;
     this.client.on(Events.InteractionCreate, (interaction) => {
-      router.handle(interaction).catch((error: unknown) => logger.error(`Unhandled interaction error: ${describeError(error)}`));
+      handlers.interactions.handle(interaction).catch((error: unknown) => logger.error(`Unhandled interaction error: ${describeError(error)}`));
+    });
+    this.client.on(Events.MessageCreate, (message) => {
+      handlers.messages(message).catch((error: unknown) => logger.error(`Unhandled message error: ${describeError(error)}`));
+    });
+    this.client.on(Events.VoiceStateUpdate, (oldState: VoiceState, newState: VoiceState) => {
+      try {
+        handlers.voiceStates({
+          guildId: newState.guild.id,
+          userId: newState.id,
+          oldChannelId: oldState.channelId,
+          newChannelId: newState.channelId,
+          newChannel: newState.channel,
+        });
+      } catch (error) {
+        logger.error(`Voice state handler failed: ${describeError(error)}`);
+      }
     });
     this.client.on(Events.Error, (error) => logger.error(`Discord client error: ${describeError(error)}`));
     this.client.on(Events.Warn, (message) => logger.warn(`Discord: ${message}`));
@@ -56,6 +93,17 @@ export class DiscordBot {
     const channel = await this.client.channels.fetch(channelId).catch(() => null);
     if (!channel || !channel.isVoiceBased() || channel.guild.id !== guildId) return null;
     return channel;
+  }
+
+  async postInChannel(guildId: string, channelId: string, content: string, mentionUserId: string): Promise<void> {
+    const channel = await this.client.channels.fetch(channelId);
+    if (!channel || channel.isDMBased() || channel.guildId !== guildId) throw new Error('channel not found in this server');
+    if (!channel.isSendable()) throw new Error("can't send messages there");
+    await channel.send({ content, allowedMentions: { users: [mentionUserId] } });
+  }
+
+  async sendDirect(userId: string, content: string): Promise<void> {
+    await this.client.users.send(userId, { content, allowedMentions: { parse: [] } });
   }
 
   async stop(): Promise<void> {

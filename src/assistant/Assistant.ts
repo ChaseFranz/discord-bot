@@ -20,6 +20,8 @@ import type {
   UserScope,
   WindowPolicy,
 } from '../storage/ports.js';
+import type { BudgetGate, UsageMeter } from '../usage/UsageService.js';
+import { claudeUsageFrom } from '../usage/UsageService.js';
 import { KeyedMutex } from '../util/KeyedMutex.js';
 import type { Clock } from '../util/time.js';
 import { collectSources, collectText, contentForTurnReplay, finalizeTurn, type Source } from './history.js';
@@ -31,6 +33,8 @@ import type { ToolContext, TurnSignals } from './tools/types.js';
 /** The slice of the Anthropic client the assistant uses (`client.beta.messages`); fakeable in tests. */
 export interface MessagesApi {
   stream(body: Parameters<Anthropic['beta']['messages']['stream']>[0], options?: { signal?: AbortSignal }): {
+    /** Text as the model writes it (only text blocks: not thinking or tool input). */
+    on(event: 'text', listener: (textDelta: string) => void): unknown;
     finalMessage(): Promise<BetaMessage>;
   };
 }
@@ -58,6 +62,26 @@ export interface AssistantDeps {
   window?: WindowPolicy;
   /** Long-term notes about people; attached to each turn when present. */
   memories?: MemoryRepository;
+  /** Records what each model call cost. */
+  usage?: UsageMeter;
+  /** Refuses new turns once the server's daily budget is spent. */
+  budget?: BudgetGate;
+}
+
+/** An image attached to a typed message. Sent with that turn only; history keeps a placeholder. */
+export interface AttachedImage {
+  name: string;
+  mediaType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
+  /** Base64-encoded bytes. */
+  data: string;
+}
+
+/** Thrown by respond() when the server has used up today's budget; no model call was made. */
+export class BudgetExceededError extends Error {
+  override readonly name = 'BudgetExceededError';
+  constructor(readonly guildId: string) {
+    super(`The daily budget for guild ${guildId} has been reached.`);
+  }
 }
 
 export interface AssistantRequest {
@@ -76,6 +100,16 @@ export interface AssistantRequest {
   musicStatus?: string;
   /** Recent voice-channel conversation (spoken turns only). */
   ambient?: readonly TranscriptSegment[];
+  /** Where to post replies the assistant sends later (reminders): the text channel, or the voice channel's chat. */
+  textChannelId?: string;
+  /** Spoken right after the assistant's last reply to this person, without its name. */
+  followUp?: boolean;
+  /** Images attached to this message. */
+  images?: readonly AttachedImage[];
+  /** Receives the reply's text as it's written (for speaking it sentence by sentence). */
+  onText?: (textDelta: string) => void;
+  /** Aborting stops the turn; respond() then rejects and nothing is stored. */
+  signal?: AbortSignal;
 }
 
 export type ReplyOutcome = 'answered' | 'truncated' | 'refused' | 'incomplete';
@@ -139,6 +173,8 @@ export class Assistant {
 
   private async runTurn(request: AssistantRequest): Promise<AssistantReply> {
     const { deps } = this;
+    if (deps.budget?.isPaused(request.scope.guildId)) throw new BudgetExceededError(request.scope.guildId);
+    request.signal?.throwIfAborted();
     const route = deps.routes[request.modality];
     const now = deps.clock();
     const others = (request.peoplePresent ?? [])
@@ -156,12 +192,19 @@ export class Assistant {
         : Promise.resolve([]),
     ]);
 
-    const storedText = request.modality === 'voice' ? `${VOICE_TURN_PREFIX}${request.text}` : request.text;
+    const images = request.images ?? [];
+    const imageNote = images.length > 0 ? `\n${images.map((image) => `[image: ${oneLineName(image.name)}]`).join(' ')}` : '';
+    const storedText = `${request.modality === 'voice' ? VOICE_TURN_PREFIX : ''}${request.text}${imageNote}`;
     const userContent: BetaContentBlockParam[] = [];
     const notes = buildSavedNotes(memories, request.scope.userId);
     if (notes) userContent.push({ type: 'text', text: notes });
     const ambient = request.modality === 'voice' ? buildAmbientExcerpt(request.ambient ?? [], deps.timeZone) : undefined;
     if (ambient) userContent.push({ type: 'text', text: ambient });
+    // Images go before the text that refers to them. They're sent with this turn only: stored
+    // history keeps the "[image: name]" placeholder instead of the bytes.
+    for (const image of images) {
+      userContent.push({ type: 'image', source: { type: 'base64', media_type: image.mediaType, data: image.data } });
+    }
     userContent.push({ type: 'text', text: storedText });
 
     const situation: BetaMessageParam = {
@@ -177,6 +220,7 @@ export class Assistant {
         peoplePresent: request.peoplePresent ?? [],
         musicStatus: request.musicStatus ?? 'nothing playing',
         style: resolveStyle(settings?.style),
+        followUp: request.followUp === true,
       }),
     };
 
@@ -196,17 +240,27 @@ export class Assistant {
       userDisplayName: request.userDisplayName,
       modality: request.modality,
       voiceChannelId: request.userVoiceChannelId,
+      textChannelId: request.textChannelId,
       signals,
     };
-    const signal = AbortSignal.timeout(route.timeoutMs);
+    const timeout = AbortSignal.timeout(route.timeoutMs);
+    const signal = request.signal ? AbortSignal.any([timeout, request.signal]) : timeout;
+    // Once stop_speaking has run, nothing more from this turn should be heard.
+    const onText = request.onText
+      ? (delta: string) => {
+          if (!signals.silenceRequested) request.onText!(delta);
+        }
+      : undefined;
     const output: BetaContentBlock[] = [];
     let outcome: ReplyOutcome = 'incomplete';
     let servedBy = route.model;
 
     for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
-      const message = await this.callModel(request.modality, route, messages, signal);
+      request.signal?.throwIfAborted();
+      const message = await this.callModel(request.modality, route, messages, signal, onText);
       servedBy = message.model;
       this.logUsage(request, route, message);
+      deps.usage?.recordClaude(request.scope.guildId, message.model, claudeUsageFrom(message.usage));
 
       if (message.stop_reason === 'refusal') {
         deps.logger.warn(
@@ -284,6 +338,7 @@ export class Assistant {
     route: AssistantRoute,
     messages: BetaMessageParam[],
     signal: AbortSignal,
+    onText: ((delta: string) => void) | undefined,
   ): Promise<BetaMessage> {
     const fallbacks = MODELS_WITH_SERVER_FALLBACK.has(route.model);
     const params = {
@@ -299,12 +354,21 @@ export class Assistant {
     };
 
     for (let attempt = 0; ; attempt++) {
+      let streamedText = false;
       try {
-        return await this.deps.messages.stream(params, { signal }).finalMessage();
+        const stream = this.deps.messages.stream(params, { signal });
+        if (onText) {
+          stream.on('text', (delta) => {
+            streamedText = true;
+            onText(delta);
+          });
+        }
+        return await stream.finalMessage();
       } catch (error) {
         // API errors (rate limits, auth, 4xx/5xx after the SDK's own retries) and timeouts are final.
-        // Anything else is a dropped stream or an unparseable streamed tool input: re-issue the request.
-        if (error instanceof Anthropic.APIError || signal.aborted || attempt >= MAX_STREAM_RETRIES) throw error;
+        // Anything else is a dropped stream or an unparseable streamed tool input: re-issue the request,
+        // unless part of the reply was already passed on (it would be said twice).
+        if (error instanceof Anthropic.APIError || signal.aborted || streamedText || attempt >= MAX_STREAM_RETRIES) throw error;
         this.deps.logger.warn(`Re-issuing a model request after a stream error: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
@@ -341,4 +405,10 @@ export class Assistant {
       this.deps.logger.info(`Request was served by fallback model ${message.model} instead of ${route.model}`);
     }
   }
+}
+
+/** Keeps a file name on one line and short inside the stored placeholder. */
+function oneLineName(name: string): string {
+  const flat = name.replace(/[\s\]\[]+/g, ' ').trim();
+  return flat.length > 80 ? `${flat.slice(0, 79)}…` : flat || 'image';
 }

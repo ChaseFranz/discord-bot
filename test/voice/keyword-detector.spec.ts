@@ -82,4 +82,20 @@ describe("KeywordDetector", () => {
       expect(detector.containsKeyword(input)).toBe(true);
     });
   });
+
+  describe('stripKeyword', () => {
+    const nimbus = new KeywordDetector('nimbus');
+
+    it('removes the wake word, however it was transcribed', () => {
+      expect(nimbus.stripKeyword('Nimbus, stop.')).toBe(', stop.');
+      expect(nimbus.stripKeyword('hey nimbis what time is it')).toBe('hey  what time is it');
+      expect(nimbus.stripKeyword('stop it nim bus')).toBe('stop it ');
+      expect(nimbus.stripKeyword('NIMBUS play jazz, Nimbus')).toBe(' play jazz, ');
+    });
+
+    it('returns undefined without the wake word, and the whole text when it is buried in a word', () => {
+      expect(nimbus.stripKeyword('pizza tonight?')).toBeUndefined();
+      expect(nimbus.stripKeyword('the supernimbusthing')).toBe('the supernimbusthing');
+    });
+  });
 });

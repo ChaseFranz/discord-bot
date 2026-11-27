@@ -15,6 +15,7 @@ const context = (overrides: Partial<ToolContext> = {}): ToolContext => ({
   userDisplayName: 'Alice',
   modality: 'voice',
   voiceChannelId: 'vc',
+  textChannelId: 'vc',
   signals: { silenceRequested: false },
   ...overrides,
 });

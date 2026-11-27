@@ -97,6 +97,45 @@ const MIGRATIONS: readonly string[] = [
     PRIMARY KEY (guild_id, user_id)
   );
   `,
+  // 2: transcription privacy, call recaps, reminders, daily usage
+  `
+  ALTER TABLE user_settings ADD COLUMN privacy TEXT NOT NULL DEFAULT 'full' CHECK (privacy IN ('full', 'requests', 'off'));
+
+  ALTER TABLE voice_sessions ADD COLUMN recap TEXT;
+  ALTER TABLE voice_sessions ADD COLUMN recapped_at INTEGER;
+
+  CREATE TABLE reminders (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id       TEXT    NOT NULL,
+    user_id        TEXT    NOT NULL,
+    user_name      TEXT    NOT NULL,
+    kind           TEXT    NOT NULL CHECK (kind IN ('reminder', 'timer')),
+    message        TEXT    NOT NULL,
+    audience       TEXT    NOT NULL CHECK (audience IN ('me', 'everyone')),
+    channel_id     TEXT    NOT NULL,
+    due_at         INTEGER NOT NULL,
+    repeat         TEXT,
+    time_zone      TEXT    NOT NULL,
+    duration_ms    INTEGER,
+    created_at     INTEGER NOT NULL,
+    fired_count    INTEGER NOT NULL DEFAULT 0,
+    last_fired_at  INTEGER,
+    status         TEXT    NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'done', 'cancelled')),
+    updated_at     INTEGER NOT NULL
+  );
+  CREATE INDEX idx_reminders_due  ON reminders (status, due_at);
+  CREATE INDEX idx_reminders_user ON reminders (guild_id, user_id, status, due_at);
+
+  -- One row per guild, local day (YYYY-MM-DD) and metric, e.g. claude.claude-haiku-5-5.output_tokens.
+  CREATE TABLE usage_daily (
+    guild_id  TEXT NOT NULL,
+    day       TEXT NOT NULL,
+    metric    TEXT NOT NULL,
+    quantity  REAL NOT NULL DEFAULT 0,
+    cost_usd  REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (guild_id, day, metric)
+  );
+  `,
 ];
 
 /**

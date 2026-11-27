@@ -138,8 +138,8 @@ export function createMemoryMcpServer(deps: MemoryServerDeps): McpServer {
       title: 'List voice sessions',
       description:
         'List recent voice sessions (each stretch of time you were listening in a voice channel), newest first, with ' +
-        'when they happened, who spoke and how much was said. Use it to find the session behind questions like ' +
-        '"what did we talk about last night?" before reading it.',
+        'when they happened, who spoke, how much was said, and a short recap of each finished call. The recap often ' +
+        'answers questions like "what did we talk about last night?" on its own; read the transcript for details.',
       inputSchema: {
         [SCOPE_PARAMS.guildId]: guildId,
         since: isoTime('Only sessions active at or after this time').optional(),

@@ -7,7 +7,9 @@
  *   npm run smoke -- --aws                    # Polly + Transcribe only (fractions of a cent)
  *
  * Claude: seeds a fake voice transcript, then asks questions that need the memory tools, checks a
- * second request reads the prompt cache, and runs a spoken-style turn on the voice model.
+ * second request reads the prompt cache, runs spoken-style turns on the voice model (streamed and
+ * split into sentences as they would be spoken), sets and lists a reminder, recaps the seeded call,
+ * and prints the estimated cost of it all.
  * AWS: synthesises a sentence with Polly and transcribes it back with Transcribe streaming.
  */
 import dotenv from 'dotenv';
@@ -21,6 +23,8 @@ import { buildRoutes } from '../app.js';
 import { createClaudeClient, describeClaudeAccess, verifyClaudeAccess } from '../claude/client.js';
 import { connectMemoryTools } from '../memory/inProcess.js';
 import { loadConfig } from '../config/config.js';
+import { CallRecapper } from '../recaps/CallRecapper.js';
+import { createReminderToolProvider } from '../reminders/reminderTools.js';
 import { createLogger, describeError } from '../logging/logger.js';
 import { MusicService } from '../music/MusicService.js';
 import { MusicError, type MusicHost, type TrackSource } from '../music/types.js';
@@ -29,8 +33,13 @@ import { TranscribeSpeechToText } from '../speech/aws/TranscribeSpeechToText.js'
 import { openDatabase, openMemoryDatabase } from '../storage/sqlite/database.js';
 import { SqliteConversationRepository } from '../storage/sqlite/SqliteConversationRepository.js';
 import { SqliteMemoryRepository } from '../storage/sqlite/SqliteMemoryRepository.js';
+import { SqliteReminderRepository } from '../storage/sqlite/SqliteReminderRepository.js';
 import { SqliteSettingsRepository } from '../storage/sqlite/SqliteSettingsRepository.js';
 import { SqliteTranscriptRepository } from '../storage/sqlite/SqliteTranscriptRepository.js';
+import { SqliteUsageRepository } from '../storage/sqlite/SqliteUsageRepository.js';
+import { PriceBook } from '../usage/pricing.js';
+import { UsageService } from '../usage/UsageService.js';
+import { SentenceChunker } from '../voice/SentenceChunker.js';
 
 dotenv.config({ quiet: true });
 
@@ -81,6 +90,16 @@ async function smokeClaude(): Promise<void> {
   const memoryDb = openMemoryDatabase(':memory:');
   const memories = new SqliteMemoryRepository(memoryDb);
   const memory = await connectMemoryTools({ transcripts, conversations, memories });
+  const reminders = new SqliteReminderRepository(db);
+  const usage = new UsageService({
+    repository: new SqliteUsageRepository(db),
+    prices: new PriceBook({ pollyEngine: config.aws.pollyEngine }),
+    clock: Date.now,
+    timeZone: config.assistant.timeZone,
+    dailyBudgetUsd: 0,
+    pollyEngine: config.aws.pollyEngine,
+    logger,
+  });
   const noMusicHost: MusicHost = {
     ensureOutput: async () => { throw new MusicError('Music is not available in the smoke test.'); },
     queueFinished: () => undefined,
@@ -90,6 +109,7 @@ async function smokeClaude(): Promise<void> {
     memory.provider,
     createMusicToolProvider(new MusicService(noMusicHost, noTracks, logger)),
     createVoiceToolProvider({ get: () => undefined }),
+    createReminderToolProvider({ reminders, changed: () => undefined, clock: Date.now, timeZone: config.assistant.timeZone }),
   ]);
   // Log each tool call so you can see the memory MCP tools being used.
   const loggingRegistry = Object.assign(Object.create(registry) as ToolRegistry, {
@@ -103,17 +123,28 @@ async function smokeClaude(): Promise<void> {
   const assistant = new Assistant({
     messages: claude.beta.messages,
     conversations, settings, tools: loggingRegistry, logger, clock: Date.now,
-    assistantName: config.assistant.name, timeZone: config.assistant.timeZone, routes: buildRoutes(config), memories,
+    assistantName: config.assistant.name, timeZone: config.assistant.timeZone, routes: buildRoutes(config), memories, usage,
   });
   const scope = { guildId: GUILD, userId: USER };
 
   const ask = async (label: string, modality: 'text' | 'voice', text: string) => {
     logger.info(`--- ${label}: ${text}`);
+    // Spoken turns stream: show each sentence as it would be handed to text-to-speech.
+    const started = Date.now();
+    const pieces: string[] = [];
+    const chunker = new SentenceChunker((piece) => {
+      pieces.push(piece);
+      logger.info(`  [would start speaking after ${Date.now() - started} ms] ${piece}`);
+    });
     const reply = await assistant.respond({
       scope, modality, userDisplayName: 'Smoke', text, channelName: modality === 'voice' ? 'General' : 'bot-chat',
       userVoiceChannelId: modality === 'voice' ? 'vc1' : undefined, userVoiceChannelName: modality === 'voice' ? 'General' : undefined,
+      textChannelId: modality === 'voice' ? 'vc1' : 'bot-chat',
+      ...(modality === 'voice' ? { onText: (delta: string) => chunker.push(delta) } : {}),
     });
-    logger.info(`=== ${reply.model} [${reply.outcome}${reply.silent ? ', silent' : ''}]: ${reply.text}`);
+    chunker.flush();
+    logger.info(`=== ${reply.model} [${reply.outcome}${reply.silent ? ', silent' : ''}] after ${Date.now() - started} ms: ${reply.text}`);
+    if (modality === 'voice') logger.info(`  (${pieces.length} spoken piece${pieces.length === 1 ? '' : 's'})`);
     if (reply.sources.length > 0) logger.info(`sources: ${reply.sources.map((s) => s.url).join(', ')}`);
   };
 
@@ -134,8 +165,38 @@ async function smokeClaude(): Promise<void> {
   });
   logger.info(`=== ${forSam.model} [${forSam.outcome}]: ${forSam.text}`);
 
+  // Reminders: Claude should call set_reminder, then list_reminders.
+  await ask('voice (should set a reminder)', 'voice', `${config.assistant.name}, remind me in ten minutes to take the pizza out.`);
+  await ask('text (should list reminders)', 'text', 'What reminders do I have?');
+  const set = await reminders.listActive(GUILD, USER);
+  const due = set.map((r) => `#${r.id} "${r.message}" due in ${Math.round((r.dueAt - Date.now()) / 60_000)} min`);
+  logger.info(`Reminders stored: ${due.join(' | ') || 'none'}`);
+
+  // A recap of the seeded call, with a couple of plans added to it.
+  const plans: Array<[string, string]> = [
+    ['Alex', 'okay I will look up hotels in Kyoto this weekend'],
+    ['Sam', 'perfect, and I will make a group chat for it'],
+  ];
+  for (const [index, [speaker, text]] of plans.entries()) {
+    await transcripts.appendSegment({
+      sessionId: session.id, guildId: GUILD, channelId: 'vc1', speakerId: `id-${speaker}`, speakerName: speaker,
+      isAssistant: false, text, startedAt: t0 + 60_000 + index * 10_000, endedAt: t0 + 65_000 + index * 10_000,
+    });
+  }
+  const recapper = new CallRecapper({
+    messages: claude.beta.messages, transcripts, usage, budget: usage, model: config.claude.voice.model,
+    effort: config.claude.voice.effort, assistantName: config.assistant.name, timeZone: config.assistant.timeZone,
+    clock: Date.now, logger,
+  });
+  recapper.sessionEnded((await transcripts.getSession(session.id))!);
+  await recapper.idle();
+  logger.info(`Recap: ${(await transcripts.listSessions(GUILD, { limit: 1 }))[0]?.recap ?? '(none written)'}`);
+
   const stored = await conversations.loadActive(scope);
   logger.info(`Thread now holds ${stored.length} stored messages; thinking blocks stored: ${stored.some((m) => m.content.some((b) => b.type === 'thinking'))}`);
+  const report = await usage.report(GUILD);
+  const perModel = report.claude.map((m) => `${m.model}: ${m.requests} requests, $${m.costUsd.toFixed(4)}`).join('; ');
+  logger.info(`Estimated cost of this smoke test: $${report.status.spentUsd.toFixed(4)} (${perModel}; ${report.webSearch.requests} web searches)`);
   await memory.close();
   db.close();
   memoryDb.close();

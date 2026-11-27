@@ -1,35 +1,41 @@
 # Nimbus
 
-Nimbus is an Alexa-style assistant for your Discord voice calls, powered by Claude. It sits in a voice channel, follows the conversation, and answers whoever says its name ("Nimbus, …"). It keeps a separate conversation with each person, and it can look back over what the whole group said. You can also type to it with `/chat`. Your typed and spoken conversation is one thread, so it remembers both.
+Nimbus is an Alexa-style assistant for your Discord voice calls, powered by Claude. It sits in a voice channel, follows the conversation, and answers whoever says its name ("Nimbus, …"). It keeps a separate conversation with each person, and it can look back over what the whole group said. You can also type to it with `/chat` or by @mentioning it. Your typed and spoken conversation is one thread, so it remembers both.
 
-- **Claude** handles the thinking: Claude Opus 5.5 for typed `/chat` replies, Claude Haiku 5.5 for spoken replies, which need to be fast. Both can be changed in `.env`. It's reached through **Claude Platform on AWS**, so requests use your AWS credentials and show up on your AWS bill.
-- **AWS Transcribe** turns speech into text (streamed while people are still talking), and **AWS Polly** speaks the replies.
-- An **MCP memory server** gives Claude tools to search and read past voice conversations and each person's own history. Old context is fetched when it's needed instead of always being stuffed into the prompt.
+- **Claude** handles the thinking: Claude Opus 5.5 for typed replies, Claude Haiku 5.5 for spoken replies, which need to be fast. Both can be changed in `.env`. It's reached through **Claude Platform on AWS**, so requests use your AWS credentials and show up on your AWS bill.
+- **AWS Transcribe** turns speech into text (streamed while people are still talking), and **AWS Polly** speaks the replies, sentence by sentence as Claude writes them.
+- **Conversations feel natural**: after Nimbus answers, you can keep talking for a few seconds without saying its name, and "Nimbus, stop" cuts it off instantly.
+- An **MCP memory server** gives Claude tools to search and read past voice conversations, short recaps of past calls, and each person's own history. Old context is fetched when it's needed instead of always being stuffed into the prompt.
+- **Reminders and timers**, said out loud in the call or posted as a mention ("Nimbus, remind us at 9 to start the raid").
 - **Music** from YouTube, by slash command or by voice ("Nimbus, play some lo-fi"). Music pauses while the assistant talks.
 - **Web search** for anything recent (news, scores, prices, weather).
+- **Privacy and cost controls**: everyone chooses what gets transcribed with `/privacy`, and a daily spending cap (default $5) with `/usage` keeps the bill predictable.
 
 ## How it works
 
 ```text
 voice channel ─► each person's audio ─► AWS Transcribe ─► transcript line ─► SQLite (ambient transcript)
-                                                                │
-                                                      contains "Nimbus"?
-                                                                │ yes
+   (skipped for people who opted out)                           │
+                                         says "Nimbus", or a follow-up right after a reply?
+                                                                │ yes ("stop" is handled right here)
                                                                 ▼
    last few minutes of the call ─┐
-   that person's thread ─────────┼─► Claude (Haiku) ◄─► tools: memory (MCP), music,
+   that person's thread ─────────┼─► Claude (Haiku) ◄─► tools: memory (MCP), music, reminders,
    situation note ───────────────┘          │                  stop_speaking, web search
-                                            ▼
+                                            ▼ streamed, one sentence at a time
                               AWS Polly ─► spoken in the channel ─► also saved to the transcript
 ```
 
+When a call ends, Claude Haiku writes a short private recap of it, which Nimbus can consult later.
+
 ### Memory
 
-There are three kinds, all stored locally with SQLite:
+There are four kinds, all stored locally with SQLite:
 
-1. **Each person's thread** with the assistant (`data/bot.db`): typed and spoken turns, with tool calls. The most recent stretch is sent with every request. Older turns move out of view but stay stored and searchable.
+1. **Each person's thread** with the assistant (`data/bot.db`): typed and spoken turns, with tool calls. The most recent stretch is sent with every request. Older turns move out of view but stay stored and searchable. Images people attach are seen with that message only; the thread keeps a placeholder.
 2. **The ambient transcript** (`data/bot.db`): everything said in a voice channel while the bot is listening, including its own spoken replies, grouped into sessions.
-3. **Long-term notes about people** (`data/memories.db`, a separate database): short facts Nimbus saves when someone tells it something worth remembering, such as "Is vegetarian" or "Birthday: May 3", plus a few facts about the server itself.
+3. **Call recaps** (`data/bot.db`): when a call ends, Claude Haiku summarises it in about 120 words (who was there, topics, decisions and who said they'd do what). Recaps are for Nimbus's own use and aren't posted anywhere. Calls shorter than six lines aren't recapped. If the bot stops before writing one, it catches up on the next start.
+4. **Long-term notes about people** (`data/memories.db`, a separate database): short facts Nimbus saves when someone tells it something worth remembering, such as "Is vegetarian" or "Birthday: May 3", plus a few facts about the server itself.
 
 With each spoken request, Claude sees the last few minutes of the call (`AMBIENT_CONTEXT_MINUTES`, default 3). Anything older it looks up with the memory tools when someone refers back to it:
 
@@ -37,7 +43,7 @@ With each spoken request, Claude sees the last few minutes of the call (`AMBIENT
 | --- | --- |
 | `search_voice_transcripts` | "What did Sam say about the trip?": keyword search with speaker/time filters, returns matches with surrounding lines |
 | `read_voice_transcript` | "Sum up last night": reads a session or time range in order, with paging |
-| `list_voice_sessions` | Finds which session to read ("what did we talk about yesterday?") |
+| `list_voice_sessions` | Lists past calls with their recaps, which often answer "what did we talk about yesterday?" on their own |
 | `search_my_conversation_history` | "Like I told you last week…": the person's *own* older history only |
 | `remember`, `update_memory`, `forget_memory` | Save, correct or delete a long-term note about someone (or the server) |
 | `search_memories` | Notes about people who aren't in the conversation ("what's Sam's favourite game?") |
@@ -46,7 +52,17 @@ With each spoken request, Claude sees the last few minutes of the call (`AMBIENT
 
 **Why keyword search instead of embeddings (for now).** The memory server uses SQLite FTS5 with BM25 ranking and stemming. Search is free and instant, and adds no extra vendor or model download. A Discord group's transcripts are small (thousands of lines, not millions), and Claude is good at writing several targeted keyword queries, adding speaker and time filters, and trying synonyms when a search misses. If paraphrase misses turn out to matter in practice ("vacation" vs "trip to Japan"), semantic search slots in behind the same `search_voice_transcripts` tool. Add an embedding model (Voyage AI, a local model, or Bedrock Titan on AWS), store vectors (`sqlite-vec` locally, pgvector or OpenSearch on AWS), and merge the two rankings. The assistant's prompts and tools don't change.
 
-**Scoping and privacy.** The memory tools always run scoped to the server, and the personal-history tool to the person speaking. The bot fills those parameters in itself, so a conversation can't read another server's transcripts or another person's thread. `/join` announces that the channel is being transcribed. Transcripts and out-of-view conversation turns are deleted after `MEMORY_RETENTION_DAYS` (default 30; `0` keeps everything). `/reset` deletes your whole thread.
+**Scoping and privacy.** The memory tools always run scoped to the server, and the personal-history tool to the person speaking. The bot fills those parameters in itself, so a conversation can't read another server's transcripts or another person's thread. `/join` announces that the channel is being transcribed. Transcripts, their recaps, out-of-view conversation turns and finished reminders are deleted after `MEMORY_RETENTION_DAYS` (default 30; `0` keeps everything). `/reset` deletes your whole thread.
+
+**Choosing what gets transcribed.** Each person picks one of three levels with `/privacy`, and it takes effect immediately, even mid-sentence:
+
+| Level | What happens |
+| --- | --- |
+| Everything I say (default) | Everything is transcribed and kept, so Nimbus can follow the conversation. |
+| Only what I say to the assistant | Only lines with its name, and follow-ups right after it answers you, are kept. Everything else is dropped as soon as it's transcribed, and never stored or logged. Your audio still goes to Transcribe, because that's how Nimbus hears its name. |
+| Nothing | Your audio is never captured or sent anywhere. You can't talk to Nimbus by voice, but `/chat` and @mentions still work. |
+
+The choice applies from then on; it doesn't delete lines already transcribed (retention does that).
 
 ### Prompt caching and history
 
@@ -63,8 +79,8 @@ The system prompt and tool list never change while the bot runs, so they're cach
 ### 2. Discord application
 
 1. Create an application at <https://discord.com/developers/applications>, add a **Bot**, and copy its token.
-2. No privileged intents are needed (it uses slash commands and voice only).
-3. Invite it with the `bot` and `applications.commands` scopes and these permissions: **View Channels, Send Messages, Embed Links, Connect, Speak, Use Voice Activity**.
+2. No privileged intents are needed. Discord delivers the text of messages that mention a bot without the Message Content intent, and that's all @mention chat reads.
+3. Invite it with the `bot` and `applications.commands` scopes and these permissions: **View Channels, Send Messages, Send Messages in Threads, Read Message History, Embed Links, Connect, Speak, Use Voice Activity**. (Read Message History lets it reply to the message that mentioned it. If you invited the bot before @mention chat existed, add the two new permissions to its role in Server Settings.)
 4. Copy the **Application ID** (`CLIENT_ID`) and your **server ID** (`GUILD_ID`). Commands are registered to that server, so they appear immediately.
 
 ### 3. Claude Platform on AWS
@@ -121,7 +137,7 @@ npm start
 
 ### 6. Smoke test (optional, uses real APIs)
 
-Without Discord, this checks Claude through your configured provider (including the MCP memory tools and prompt caching) and AWS (Polly speech, transcribed back by Transcribe):
+Without Discord, this checks Claude through your configured provider and AWS (Polly speech, transcribed back by Transcribe). The Claude part covers the MCP memory tools, prompt caching, streamed spoken replies, reminders and a call recap, and prints what the run cost (about $0.08):
 
 ```bash
 npm run smoke                 # both
@@ -134,8 +150,11 @@ npm run smoke -- --aws        # AWS only
 | Command | What it does |
 | --- | --- |
 | `/join` | Joins your voice channel and starts listening. Say the wake word ("Nimbus") to talk. |
-| `/leave` | Leaves the voice channel (and stops music). |
-| `/chat prompt:` | Type to the assistant; shares your conversation with voice. |
+| `/leave` | Leaves the voice channel (and stops music). It also leaves by itself after `AUTO_LEAVE_MINUTES` (default 2) with nobody else in the channel. |
+| `/chat prompt:` | Type to the assistant; shares your conversation with voice. Up to 200 characters; @mention it for longer messages or images. |
+| @Nimbus *message* | Mention it (or reply to one of its messages) in any channel or thread. No length limit, and it can see attached images. |
+| `/privacy transcription:` | Choose what Nimbus transcribes when you talk (see Privacy above). Without an option, shows your current choice. |
+| `/usage` | Today's estimated spending against the daily budget, broken down by Claude model, web search, Transcribe and Polly, plus the last 7 days. |
 | `/customize style:` | Default, Casual, Formal, Humorous or Sarcastic, for text and voice. |
 | `/reset` | Deletes your conversation (asks for confirmation). Long-term notes stay; see `/memories`. |
 | `/memories` | Shows only you what Nimbus remembers about you, with options to forget one note or everything. |
@@ -143,17 +162,36 @@ npm run smoke -- --aws        # AWS only
 | `/skip` `/pause` `/resume` `/stop` `/queue` | Music controls. |
 | `/help` | Lists commands. |
 
-By voice: "Nimbus, play Bohemian Rhapsody", "Nimbus, skip this", "Nimbus, what did Alex say about the game?", "Nimbus, what's the weather tomorrow?", "Nimbus, stop".
+By voice: "Nimbus, play Bohemian Rhapsody", "Nimbus, skip this", "Nimbus, what did Alex say about the game?", "Nimbus, what's the weather tomorrow?", "Nimbus, remind me in 10 minutes to take the pizza out", "Nimbus, stop".
 
-When Nimbus hears its name, it plays a short chime and pauses any music, so everyone knows it's thinking. The music comes back after the reply. Turn the chime off with `WAKE_SOUND_ENABLED=false`.
+### Talking to Nimbus
+
+- **The chime.** When Nimbus hears its name, it plays a short chime and pauses any music, so everyone knows it's thinking. The music comes back after the reply. Turn the chime off with `WAKE_SOUND_ENABLED=false`.
+- **Fast replies.** Nimbus starts speaking its first sentence while Claude is still writing the rest, and prepares each next sentence while the current one plays.
+- **Follow-ups.** For `FOLLOW_UP_SECONDS` (default 8) after Nimbus finishes answering you, you can carry on without its name ("and what about tomorrow?"). This only works for the person it just answered. If you were actually talking to someone else, Nimbus usually works that out and stays quiet. Set it to `0` to always require the name.
+- **Stop.** "Nimbus, stop" (or "never mind", "be quiet", "cancel"…) is handled on the spot, without asking Claude: it stops talking and drops any reply still being written. While it's answering you, plain "stop" works too. If it isn't talking, "Nimbus, stop" pauses the music; "Nimbus, resume" brings it back.
+
+### Reminders and timers
+
+Ask in any way: "Nimbus, set a timer for 10 minutes", "remind me at 9 to start the raid", "remind us every Friday at 8 to pick a movie", "what reminders do I have?", "cancel reminder 3". Repeats can be every N minutes (5 or more), hours, days, weeks, months or years, or on chosen weekdays. Times are in the server's `TIMEZONE`, and daily or longer repeats keep their local time across daylight saving changes.
+
+When one is due, Nimbus says it out loud if you're in a call with it. For "remind us", it says it to whoever is in the call. Otherwise it posts a mention in the channel where you set it; for one set by voice, that's the voice channel's chat. If it can't post there, it sends you a direct message. Each person can have 25 active reminders, and only the person who set one can cancel it.
+
+Reminders are stored in the database, so they survive restarts. **Running on your PC:** a reminder due while the PC is off or asleep goes out as soon as the bot is running again, marked as late. A repeating one then skips ahead to its next future time instead of firing for every one it missed. **Running on AWS:** the bot runs around the clock, so reminders are always on time. The same scheduler works there unchanged; only the storage moves (SQLite to DynamoDB, behind the same `ReminderRepository` interface). A separate scheduling service such as EventBridge isn't needed while the bot is always on.
 
 ## Costs
 
 You pay each provider directly. Rough guide:
 
-- **Claude**: Opus 5.5 is $4 / $20 per million input/output tokens and Haiku 5.5 is $0.10 / $0.50 (prompts up to 100K tokens), with cache reads far cheaper than fresh input. Web search is $10 per 1,000 searches, capped at 5 per text turn and 2 per spoken turn. Turn it off with `WEB_SEARCH_ENABLED=false`. Through Claude Platform on AWS these same rates appear on your AWS bill, metered as Claude Consumption Units ($0.01 each).
-- **AWS Transcribe streaming**: billed per second of audio, with no per-request minimum (the AWS pricing page's example is $0.01/minute in us-east-1). Every utterance in a listening channel is transcribed, because that's what builds the group memory; sounds under 0.4 s are ignored.
-- **AWS Polly**: billed per character spoken; see the Polly pricing page for your engine.
+- **Claude**: Opus 5.5 is $4 / $20 per million input/output tokens and Haiku 5.5 is $0.10 / $0.50 (prompts up to 100K tokens), with cache reads far cheaper than fresh input. Web search is $10 per 1,000 searches, capped at 5 per text turn and 2 per spoken turn. Turn it off with `WEB_SEARCH_ENABLED=false`. Through Claude Platform on AWS these same rates appear on your AWS bill, metered as Claude Consumption Units ($0.01 each). Call recaps use Haiku and cost a fraction of a cent each.
+- **AWS Transcribe streaming**: $0.0001667 per second of audio ($0.01 a minute) in us-east-1, with no per-request minimum. Every utterance in a listening channel is transcribed, because that's what builds the group memory; sounds under 0.4 s are ignored.
+- **AWS Polly**: billed per character spoken: $30 per million characters for generative voices, $16 neural, $4 standard.
+
+### Daily budget
+
+Nimbus meters every Claude request, web search, second of transcription and character of speech, prices them at the list prices above, and keeps a running total per day (in your `TIMEZONE`). `/usage` shows the breakdown. When a day's total reaches `DAILY_BUDGET_USD` (default $5), Nimbus says so once in the call, then stops listening and answering until midnight. Typed requests get a short "taking a break" reply. Music, reminders and the other slash commands keep working. Text replies get a note once 80% is used. Set `DAILY_BUDGET_USD=0` to track spending without a cap.
+
+The totals are estimates. A request in progress when the cap is reached finishes first. Your Anthropic or AWS bill is authoritative. If your region's Transcribe or Polly prices differ, set `TRANSCRIBE_USD_PER_MINUTE` and `POLLY_USD_PER_MILLION_CHARACTERS`.
 
 ## Using the memory from other MCP clients
 
@@ -182,7 +220,7 @@ Everything external sits behind a small interface (a "port"), and the one place 
 
 | Port | Today (runs on your PC) | Later on AWS |
 | --- | --- | --- |
-| `ConversationRepository`, `TranscriptRepository`, `SettingsRepository`, `MemoryRepository` (`src/storage/ports.ts`) | SQLite (`src/storage/sqlite/`), with notes in their own `memories.db` | DynamoDB / Aurora; OpenSearch or pgvector for semantic search |
+| `ConversationRepository`, `TranscriptRepository`, `SettingsRepository`, `MemoryRepository`, `ReminderRepository`, `UsageRepository` (`src/storage/ports.ts`) | SQLite (`src/storage/sqlite/`), with notes in their own `memories.db` | DynamoDB / Aurora; OpenSearch or pgvector for semantic search |
 | `SpeechToText` (`src/speech/ports.ts`) | AWS Transcribe streaming | same |
 | `TextToSpeech` | AWS Polly | same |
 | `TrackSource` (`src/music/types.ts`) | YouTube (`@distube/ytdl-core`) | same |
@@ -199,11 +237,15 @@ src/
   assistant/             Claude agent loop, prompts, history sanitising, styles
     tools/               tool registry, MCP adapter, music + voice tools
   memory/                memory MCP server (+ standalone stdio entry)
+  reminders/             reminder tools, repeat rules, scheduler, delivery
+  recaps/                end-of-call recaps
+  usage/                 price list, usage meter and daily budget
+  privacy/               per-person transcription choice
   storage/               repository ports + SQLite implementations
   speech/                STT/TTS ports + AWS adapters
-  voice/                 voice sessions, audio capture, wake word, voice conversation flow
+  voice/                 voice sessions, audio capture, speech queue, wake word, follow-ups and stop
   music/                 queue service + YouTube source
-  discord/               client, interaction router, slash commands
+  discord/               client, interaction router, slash commands, @mention chat
   scripts/smoke.ts       live smoke test
 infra/                   AWS CDK app: the Nimbus CloudFormation stack (bot IAM user, policy, key)
 test/                    unit and integration tests (jest)

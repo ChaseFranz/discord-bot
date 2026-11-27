@@ -44,7 +44,8 @@ export function formatSessionList(sessions: VoiceSessionSummary[]): string {
   const lines = sessions.map((session) => {
     const ended = session.endedAt === null ? 'still active' : `ended ${isoUtc(session.endedAt)}`;
     const who = session.participants.length > 0 ? session.participants.join(', ') : 'nobody spoke';
-    return `- session ${session.id}: #${session.channelName}, started ${isoUtc(session.startedAt)}, ${ended}; ${session.segmentCount} lines; speakers: ${who}`;
+    const line = `- session ${session.id}: #${session.channelName}, started ${isoUtc(session.startedAt)}, ${ended}; ${session.segmentCount} lines; speakers: ${who}`;
+    return session.recap ? `${line}\n  Recap: ${session.recap.replace(/\s+/g, ' ').trim()}` : line;
   });
   return lines.join('\n');
 }

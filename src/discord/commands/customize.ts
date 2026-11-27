@@ -22,7 +22,7 @@ export const customizeCommand: BotCommand = {
       await interaction.editReply({ content: 'Unknown style.' });
       return;
     }
-    await services.settings.set({ guildId: interaction.guildId, userId: interaction.user.id }, { style });
+    await services.settings.update({ guildId: interaction.guildId, userId: interaction.user.id }, { style });
     services.logger.info(`${interaction.user.tag} set style=${style}`);
     await interaction.editReply({ content: `Settings updated: Style = ${STYLES[style].label}` });
   },

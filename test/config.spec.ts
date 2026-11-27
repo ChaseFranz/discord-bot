@@ -75,4 +75,17 @@ describe('loadConfig', () => {
   it('rejects an unknown time zone', () => {
     expect(() => loadConfig({ ...required, TIMEZONE: 'Mars/Olympus' })).toThrow(ConfigError);
   });
+
+  it('defaults follow-up mode, auto-leave and the $5 daily budget, and validates them', () => {
+    const config = loadConfig({ ...required });
+    expect(config.assistant).toMatchObject({ followUpSeconds: 8, autoLeaveMinutes: 2 });
+    expect(config.usage).toEqual({ dailyBudgetUsd: 5, transcribeUsdPerMinute: undefined, pollyUsdPerMillionCharacters: undefined });
+    const custom = loadConfig({
+      ...required, FOLLOW_UP_SECONDS: '0', AUTO_LEAVE_MINUTES: '10', DAILY_BUDGET_USD: '0', TRANSCRIBE_USD_PER_MINUTE: '0.024',
+    });
+    expect(custom.assistant).toMatchObject({ followUpSeconds: 0, autoLeaveMinutes: 10 });
+    expect(custom.usage).toMatchObject({ dailyBudgetUsd: 0, transcribeUsdPerMinute: 0.024 });
+    expect(() => loadConfig({ ...required, DAILY_BUDGET_USD: '-1' })).toThrow(ConfigError);
+    expect(() => loadConfig({ ...required, FOLLOW_UP_SECONDS: 'soon' })).toThrow(/FOLLOW_UP_SECONDS/);
+  });
 });
