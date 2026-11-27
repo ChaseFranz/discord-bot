@@ -14,6 +14,8 @@ export interface SpeechProgress {
 export interface ReplySpeech {
   /** Speaks another piece of the reply after the ones already added. */
   say(text: string): void;
+  /** The reply has been written in full: no more pieces are coming. */
+  end(): void;
   cancel(): void;
   readonly cancelled: boolean;
   finished(): Promise<void>;
@@ -24,22 +26,41 @@ export interface ReplySpeech {
   progress(): SpeechProgress;
 }
 
+/** How a reply's pieces are turned into audio. */
+export interface ReplyVoice<A> {
+  /**
+   * A piece has been written (they come in order). Returns how to get its audio, which the queue
+   * calls ahead of time, while the piece before is playing.
+   */
+  piece(text: string): () => Promise<A>;
+  /** No more pieces are coming. */
+  end?(): void;
+  /** The reply was cancelled: nothing more is wanted for it. */
+  cancel?(): void;
+}
+
 /**
- * Opens a reply on `queue` that keeps track of what has been heard of it. `prepare` turns one piece
- * of text into audio (text-to-speech); it runs ahead of time, while the piece before is playing.
- * Once `live` says no (the call has ended), further pieces are ignored.
+ * Opens a reply on `queue` that keeps track of what has been heard of it. `voice` turns its pieces
+ * into audio: a ReplyVoice, or simply a function that makes one piece's audio on its own
+ * (text-to-speech), run while the piece before is playing. Once `live` says no (the call has
+ * ended), further pieces are ignored.
  */
-export function openReplySpeech<A>(queue: SpeechQueue<A>, prepare: (text: string) => Promise<A>, live: () => boolean = () => true): ReplySpeech {
+export function openReplySpeech<A>(
+  queue: SpeechQueue<A>,
+  voice: ReplyVoice<A> | ((text: string) => Promise<A>),
+  live: () => boolean = () => true,
+): ReplySpeech {
+  const speaker: ReplyVoice<A> = typeof voice === 'function' ? { piece: (text) => () => voice(text) } : voice;
   const reply = queue.openReply();
   const pieces: Array<{ text: string; state: 'waiting' | 'playing' | PieceEnding }> = [];
   let started = false;
   const startListeners: Array<() => void> = [];
   return {
     say: (text) => {
-      if (!live()) return;
+      if (!live() || reply.cancelled) return;
       const piece: (typeof pieces)[number] = { text, state: 'waiting' };
       pieces.push(piece);
-      reply.add('part of a reply', () => prepare(text), {
+      reply.add('part of a reply', speaker.piece(text), {
         started: () => {
           piece.state = 'playing';
           if (started) return;
@@ -51,7 +72,11 @@ export function openReplySpeech<A>(queue: SpeechQueue<A>, prepare: (text: string
         },
       });
     },
-    cancel: () => reply.cancel(),
+    end: () => speaker.end?.(),
+    cancel: () => {
+      reply.cancel();
+      speaker.cancel?.();
+    },
     get cancelled() {
       return reply.cancelled;
     },

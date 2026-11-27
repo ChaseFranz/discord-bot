@@ -39,7 +39,9 @@ describe('loadConfig', () => {
       transcribeLanguageCode: 'en-US',
       pollyVoiceId: 'Kenneth',
       pollyEngine: 'generative',
+      pollyStreaming: true,
     });
+    expect(loadConfig({ ...required, POLLY_STREAMING: 'false' }).aws.pollyStreaming).toBe(false);
     expect(config.music).toEqual({ enabled: true, source: 'direct', ytDlpPath: 'yt-dlp', helpers: undefined });
     expect(loadConfig({ ...required, MUSIC_ENABLED: 'false' }).music.enabled).toBe(false);
     expect(loadConfig({ ...required, YT_DLP_PATH: '/opt/bin/yt-dlp' }).music.ytDlpPath).toBe('/opt/bin/yt-dlp');
