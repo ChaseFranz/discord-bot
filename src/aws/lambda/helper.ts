@@ -1,14 +1,17 @@
 import { S3Client } from '@aws-sdk/client-s3';
+import { isLive } from '../../calls/voiceTask.js';
 import { createLogger, describeError } from '../../logging/logger.js';
 import { HelperApi } from '../../music/relay/HelperApi.js';
 import { createDocumentClient } from '../../storage/dynamodb/dynamo.js';
 import { systemClock } from '../../util/time.js';
+import { DynamoVoiceTaskStore } from '../adapters.js';
 import { DynamoHelperRegistry, DynamoMusicJobBoard, S3AudioRelayStore } from '../musicRelay.js';
 
 /**
  * Lambda behind the public address music helpers talk to (a function URL). It only does what
  * HelperApi allows a valid helper token to do: check in, take a request for a song, and report on
- * it. It holds no Discord or Claude credentials.
+ * it. It holds no Discord or Claude credentials. It also looks at whether the voice task is live,
+ * to tell helpers how often to ask, and can read nothing else of its record.
  */
 interface FunctionUrlEvent {
   rawPath?: string;
@@ -46,6 +49,7 @@ function createApi(): HelperApi {
   };
   const table = setting('DYNAMODB_TABLE');
   const doc = createDocumentClient({ region: setting('AWS_REGION'), endpoint: process.env.DYNAMODB_ENDPOINT?.trim() || undefined });
+  const voiceTasks = new DynamoVoiceTaskStore(doc, table);
   return new HelperApi({
     guildId: setting('GUILD_ID'),
     registry: new DynamoHelperRegistry(doc, table),
@@ -53,6 +57,8 @@ function createApi(): HelperApi {
     store: new S3AudioRelayStore(new S3Client({}), setting('MUSIC_RELAY_BUCKET')),
     clock: systemClock,
     logger,
+    // The bot is in a call, or on its way to one, while its voice task is starting or running.
+    inCall: async (guildId) => isLive(await voiceTasks.liveness(guildId), systemClock()),
   });
 }
 

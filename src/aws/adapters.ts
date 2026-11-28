@@ -11,13 +11,14 @@ import {
   type CreateScheduleCommandInput,
 } from '@aws-sdk/client-scheduler';
 import { DeleteMessageCommand, ReceiveMessageCommand, SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
-import { DeleteCommand, GetCommand, PutCommand, UpdateCommand, type DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
+import { DeleteCommand, GetCommand, PutCommand, QueryCommand, UpdateCommand, type DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import {
   HEARTBEAT_STALE_MS,
   START_TIMEOUT_MS,
   type CallSnapshot,
   type ReceivedMessage,
   type VoiceTaskLauncher,
+  type VoiceTaskLiveness,
   type VoiceTaskMessage,
   type VoiceTaskQueue,
   type VoiceTaskRecord,
@@ -48,6 +49,30 @@ export class DynamoVoiceTaskStore implements VoiceTaskStore {
       ...(item.taskArn ? { taskArn: String(item.taskArn) } : {}),
       ...(item.call ? { call: item.call as CallSnapshot } : {}),
     };
+  }
+
+  /**
+   * Just enough of the record to tell whether the task is live (see isLive), and nothing about the
+   * call or who is in it: for the endpoint music helpers talk to, which may read only these fields.
+   * A Query, not a GetItem, because only a Query can be made to name the fields it reads (see the
+   * helper's permissions in infra/lib/nimbus-cloud-stack.ts).
+   */
+  async liveness(guildId: string): Promise<VoiceTaskLiveness | undefined> {
+    const attr = names('status', 'startedAt', 'heartbeatAt');
+    const { pk, sk } = key(guildId);
+    const result = await this.doc.send(
+      new QueryCommand({
+        TableName: this.table,
+        KeyConditionExpression: 'pk = :pk AND sk = :sk',
+        ExpressionAttributeValues: { ':pk': pk, ':sk': sk },
+        ProjectionExpression: attr.refs.join(', '),
+        ExpressionAttributeNames: attr.map,
+        Select: 'SPECIFIC_ATTRIBUTES',
+      }),
+    );
+    const item = result.Items?.[0];
+    if (!item) return undefined;
+    return { status: item.status as VoiceTaskRecord['status'], startedAt: Number(item.startedAt), heartbeatAt: Number(item.heartbeatAt) };
   }
 
   async claimStart(guildId: string, now: number): Promise<boolean> {

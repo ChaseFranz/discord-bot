@@ -115,7 +115,7 @@ With an admin profile, from the repo root:
 ```bash
 cd infra && npm install
 npx cdk bootstrap --profile admin   # once per account and region
-npx cdk deploy --profile admin
+npx cdk deploy Nimbus --profile admin
 cd ..
 cp .env.example .env                # if you haven't already
 aws secretsmanager get-secret-value --secret-id nimbus/bot-access-key --query SecretString --output text --profile admin \
@@ -164,7 +164,7 @@ npm run smoke -- --aws        # AWS only
 | `/memories` | Shows only you what Nimbus remembers about you, with options to forget one note or everything. |
 | `/play query:` | Plays a YouTube URL or search; queues if something is playing. |
 | `/skip` `/pause` `/resume` `/stop` `/queue` | Music controls. |
-| `/musichelper` | On AWS: shows who is running a [music helper](helper/README.md) and gives you the code to set up your own. Shown only to you. |
+| `/musichelper` | On AWS: shows who is running a [music helper](helper/README.md) and gives you the line that sets up your own, with your code in it. Shown only to you. |
 | `/help` | Lists commands. |
 
 By voice: "Nimbus, play Bohemian Rhapsody", "Nimbus, skip this", "Nimbus, what did Alex say about the game?", "Nimbus, what's the weather tomorrow?", "Nimbus, remind me in 10 minutes to take the pizza out", "Nimbus, stop", "Nimbus, you can go now" (it says goodbye and leaves the call).
@@ -233,11 +233,11 @@ Compared with running on your PC:
 
 - **`/join` and `/play`** take about 30–60 seconds the first time, while the voice task starts. Nimbus replies "On my way…" right away.
 - **@mention chat** is off: it needs a connection that's always open. `/chat` works as usual.
-- **Music** needs a helper: YouTube won't hand audio to AWS addresses ("Sign in to confirm you're not a bot"). So here the audio is fetched by a [music helper](helper/README.md), a one-file script that anyone in the server can run on their own computer after getting a code from `/musichelper`. It uploads each song in pieces to a private S3 bucket, and the voice task plays them as they arrive; a song is deleted a day later. Live streams work too, and are sent only for as long as they are being played. While nobody is running a helper, `/play` and Nimbus say so and link to the instructions.
+- **Music** needs a helper: YouTube won't hand audio to AWS addresses ("Sign in to confirm you're not a bot"). So here the audio is fetched by a [music helper](helper/README.md), a one-file script that anyone in the server can set up and start on their own computer with one line from `/musichelper` (it brings Node.js along if they don't have it). It uploads each song in pieces to a private S3 bucket, and the voice task plays them as they arrive; a song is deleted a day later. Live streams work too, and are sent only for as long as they are being played. While nobody is running a helper, `/play` and Nimbus say so and link to the instructions.
 - **Data** is kept in two on-demand DynamoDB tables. Old transcripts and conversation turns expire by themselves (DynamoDB's TTL). Nothing is copied from your PC's SQLite files.
 - **Reminders** arrive on time even when nobody is in a call.
 
-It costs roughly **$5 a month** at about 3 hours of calls a day, on top of Claude, Transcribe and Polly usage. The voice task is about $0.025 an hour, plus a public IP while it runs. Lambda, SQS, EventBridge and DynamoDB stay within or near their free tiers at this size, and the two secrets are $0.80 a month. A music helper checks in every couple of seconds while it runs, which comes to under a dollar a month for one that's left running around the clock and a few cents for one that runs only during calls; the audio passing through S3 is a fraction of a cent a song. With `ALERT_EMAIL` set, an AWS Budgets alert emails you at 80% of `MONTHLY_BUDGET_USD` (default $25).
+It costs roughly **$5 a month** at about 3 hours of calls a day, on top of Claude, Transcribe and Polly usage. The voice task is about $0.025 an hour, plus a public IP while it runs. Lambda, SQS, EventBridge and DynamoDB stay within or near their free tiers at this size, and the two secrets are $0.80 a month. A music helper checks in every couple of seconds during calls and every 15 seconds the rest of the time, which comes to around 20 cents a month for one that's left running around the clock; the audio passing through S3 is a fraction of a cent a song. With `ALERT_EMAIL` set, an AWS Budgets alert emails you at 80% of `MONTHLY_BUDGET_USD` (default $25).
 
 ### One-time setup
 

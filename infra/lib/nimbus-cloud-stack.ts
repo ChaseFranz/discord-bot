@@ -212,6 +212,23 @@ export class NimbusCloudStack extends Stack {
         },
       }),
     );
+    // And whether the bot is in a call (its voice task is starting or running), which says how often
+    // helpers need to ask for work: three fields of the voice task's status record, not the call or
+    // who is in it. Only by a Query that names those fields: a GetItem can't be held to named fields,
+    // since one that names none reads them all.
+    helper.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['dynamodb:Query'],
+        resources: [table.tableArn],
+        conditions: {
+          'ForAllValues:StringEquals': {
+            'dynamodb:LeadingKeys': [`VOICE#${props.discord.guildId}`],
+            'dynamodb:Attributes': ['pk', 'sk', 'status', 'startedAt', 'heartbeatAt'],
+          },
+          StringEquals: { 'dynamodb:Select': 'SPECIFIC_ATTRIBUTES' },
+        },
+      }),
+    );
     // The upload forms it hands out are signed with this permission, and it needs no other in the bucket.
     helper.addToRolePolicy(new iam.PolicyStatement({ actions: ['s3:PutObject'], resources: [relay.arnForObjects('music/*')] }));
     const helperEndpoint = helper.addFunctionUrl({ authType: lambda.FunctionUrlAuthType.NONE });

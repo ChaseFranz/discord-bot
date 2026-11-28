@@ -50,7 +50,10 @@ export interface VoiceTaskStore {
   clear(guildId: string): Promise<void>;
 }
 
-export function isLive(record: VoiceTaskRecord | undefined, now: number): record is VoiceTaskRecord {
+/** The part of a status record that says whether its task is live (see isLive): nothing about the call. */
+export type VoiceTaskLiveness = Pick<VoiceTaskRecord, 'status' | 'startedAt' | 'heartbeatAt'>;
+
+export function isLive<R extends VoiceTaskLiveness>(record: R | undefined, now: number): record is R {
   if (!record) return false;
   return record.status === 'running' ? now - record.heartbeatAt < HEARTBEAT_STALE_MS : now - record.startedAt < START_TIMEOUT_MS;
 }

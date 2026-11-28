@@ -125,11 +125,13 @@ describe('loadConfig', () => {
       helpers: {
         apiUrl: 'https://abc.lambda-url.us-east-1.on.aws/', relayBucket: 'nimbus-music-relay',
         guideUrl: 'https://github.com/ChaseFranz/discord-bot/tree/main/helper#readme',
+        downloadUrl: 'https://raw.githubusercontent.com/ChaseFranz/discord-bot/main/helper',
       },
     });
     expect(loadConfig({ ...helpers, MUSIC_HELPER_GUIDE_URL: 'https://example.com/helper' }).music.helpers?.guideUrl).toBe('https://example.com/helper');
+    expect(loadConfig({ ...helpers, MUSIC_HELPER_DOWNLOAD_URL: 'https://example.com/files/' }).music.helpers?.downloadUrl).toBe('https://example.com/files');
 
-    expect.assertions(6);
+    expect.assertions(7);
     try {
       loadConfig({ ...required, MUSIC_SOURCE: 'helpers' });
     } catch (error) {

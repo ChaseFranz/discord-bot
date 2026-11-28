@@ -1,5 +1,5 @@
 import { DynamoVoiceTaskStore } from '../../src/aws/adapters.js';
-import { HEARTBEAT_STALE_MS, MemoryVoiceTaskStore, type VoiceTaskStore } from '../../src/calls/voiceTask.js';
+import { HEARTBEAT_STALE_MS, MemoryVoiceTaskStore, START_TIMEOUT_MS, isLive, type VoiceTaskStore } from '../../src/calls/voiceTask.js';
 import { handleReminderWakeUp, type ReminderWakeUp } from '../../src/reminders/wakeUp.js';
 import type { NewReminder, Reminder } from '../../src/storage/ports.js';
 import { createDocumentClient } from '../../src/storage/dynamodb/dynamo.js';
@@ -55,6 +55,41 @@ describe.each(stores)('voice task status record ($name)', ({ open }) => {
     expect(await store.get('g')).toBeUndefined();
     await store.setTaskArn('g', 'ignored when there is no record');
     expect(await store.get('g')).toBeUndefined();
+  });
+});
+
+// What the endpoint music helpers talk to reads of the record, to tell them how often to ask for work.
+(dynamoEndpoint ? describe : describe.skip)('whether a voice task is live, as music helpers are told (dynamodb)', () => {
+  it('reads only the fields that say so, never the call or who is in it', async () => {
+    const storage: TestStorage = await backends.find((backend) => backend.name === 'dynamodb')!.open(fakeClock());
+    const doc = createDocumentClient({ region: 'us-east-1', endpoint: dynamoEndpoint });
+    const store = new DynamoVoiceTaskStore(doc, storage.tables!.main);
+    try {
+      const now = 1_000_000;
+      expect(await store.liveness('g')).toBeUndefined();
+      expect(isLive(await store.liveness('g'), now)).toBe(false);
+
+      // Someone asked for a call: on its way.
+      await store.claimStart('g', now);
+      await store.setTaskArn('g', 'arn:task/1');
+      expect(await store.liveness('g')).toEqual({ status: 'starting', startedAt: now, heartbeatAt: now });
+      expect(isLive(await store.liveness('g'), now + START_TIMEOUT_MS - 1)).toBe(true);
+
+      // In the call.
+      const call = { channelId: 'vc', channelName: 'General', people: [{ id: 'u1', name: 'Alice' }], music: 'playing "Song"' };
+      await store.heartbeat('g', now + 30_000, call);
+      const live = await store.liveness('g');
+      expect(live).toEqual({ status: 'running', startedAt: now, heartbeatAt: now + 30_000 });
+      expect(isLive(live, now + 31_000)).toBe(true);
+      // A task that stopped reporting in is not live, even before its record is cleared.
+      expect(isLive(live, now + 30_000 + HEARTBEAT_STALE_MS)).toBe(false);
+
+      await store.clear('g');
+      expect(await store.liveness('g')).toBeUndefined();
+    } finally {
+      doc.destroy();
+      await storage.close();
+    }
   });
 });
 
