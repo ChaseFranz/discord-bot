@@ -24,6 +24,8 @@ export interface MusicHelperConfig {
   relayBucket: string;
   /** Where people download the helper and read how to set it up. */
   guideUrl: string;
+  /** Where the helper's files are downloaded from: /musichelper gives the lines that run install.ps1 and install.sh from here. */
+  downloadUrl: string;
 }
 
 /**
@@ -66,6 +68,7 @@ const envSchema = z.object({
   MUSIC_HELPER_API_URL: z.url().optional(),
   MUSIC_RELAY_BUCKET: z.string().min(3).optional(),
   MUSIC_HELPER_GUIDE_URL: z.url().default('https://github.com/ChaseFranz/discord-bot/tree/main/helper#readme'),
+  MUSIC_HELPER_DOWNLOAD_URL: z.url().default('https://raw.githubusercontent.com/ChaseFranz/discord-bot/main/helper'),
 
   ASSISTANT_NAME: z.string().default('Nimbus'),
   WAKE_WORD: z.string().optional(),
@@ -250,7 +253,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       ytDlpPath: e.YT_DLP_PATH,
       helpers:
         e.MUSIC_SOURCE === 'helpers'
-          ? { apiUrl: e.MUSIC_HELPER_API_URL!, relayBucket: e.MUSIC_RELAY_BUCKET!, guideUrl: e.MUSIC_HELPER_GUIDE_URL }
+          ? {
+              apiUrl: e.MUSIC_HELPER_API_URL!,
+              relayBucket: e.MUSIC_RELAY_BUCKET!,
+              guideUrl: e.MUSIC_HELPER_GUIDE_URL,
+              downloadUrl: e.MUSIC_HELPER_DOWNLOAD_URL.replace(/\/+$/, ''),
+            }
           : undefined,
     },
     assistant: {

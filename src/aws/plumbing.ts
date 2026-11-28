@@ -42,7 +42,14 @@ export function musicRelay(config: AppConfig, clock: Clock): MusicRelay | undefi
     registry,
     board: new DynamoMusicJobBoard(doc, backend.table),
     store: new S3AudioRelayStore(new S3Client({}), helpers.relayBucket),
-    desk: new HelperDesk({ guildId: config.discord.guildId, registry, clock, apiUrl: helpers.apiUrl, guideUrl: helpers.guideUrl }),
+    desk: new HelperDesk({
+      guildId: config.discord.guildId,
+      registry,
+      clock,
+      apiUrl: helpers.apiUrl,
+      guideUrl: helpers.guideUrl,
+      downloadUrl: helpers.downloadUrl,
+    }),
   };
 }
 

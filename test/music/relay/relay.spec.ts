@@ -1,5 +1,5 @@
 import { HelperApi } from '../../../src/music/relay/HelperApi.js';
-import { HELPER_POLL_MS, HelperDesk, LISTENING_EVERY_MS, UNHEARD_MS } from '../../../src/music/relay/HelperDesk.js';
+import { HELPER_IDLE_POLL_MS, HELPER_ONLINE_MS, HELPER_POLL_MS, HelperDesk, LISTENING_EVERY_MS, UNHEARD_MS } from '../../../src/music/relay/HelperDesk.js';
 import { HelperTrackSource, LIVE_NEEDS_FFMPEG, NOTHING_FOUND } from '../../../src/music/relay/HelperTrackSource.js';
 import { MemoryAudioRelayStore, MemoryHelperRegistry, MemoryMusicJobBoard } from '../../../src/music/relay/memory.js';
 import { chunkName, type MusicJob } from '../../../src/music/relay/ports.js';
@@ -58,7 +58,7 @@ describe('music helpers', () => {
     registry = new MemoryHelperRegistry();
     board = new MemoryMusicJobBoard();
     store = new MemoryAudioRelayStore('https://bucket.example/');
-    desk = new HelperDesk({ guildId: GUILD, registry, clock, apiUrl: API, guideUrl: GUIDE });
+    desk = new HelperDesk({ guildId: GUILD, registry, clock, apiUrl: API, guideUrl: GUIDE, downloadUrl: 'https://raw.example/helper' });
     api = new HelperApi({ guildId: GUILD, registry, board, store, clock, logger: silentLogger() });
     later = [];
     repeating = [];
@@ -133,11 +133,27 @@ describe('music helpers', () => {
       expect(await desk.blocker()).toBeUndefined();
 
       // Alice's stops; Sam's keeps asking for work every few seconds.
-      for (let seconds = 0; seconds < 30; seconds += 3) {
+      for (let waited = 0; waited <= HELPER_ONLINE_MS; waited += 3_000) {
         clock.advance(3_000);
         await post('/poll', { token: sam, version: '1.0.0' });
       }
       expect((await desk.online()).map((helper) => helper.userName)).toEqual(['Sam']);
+    });
+
+    it('counts a helper as running between the slower polls outside calls, and through one that failed', async () => {
+      const alice = await setUp(ALICE, 'Alice');
+      for (let poll = 0; poll < 4; poll++) {
+        await post('/poll', { token: alice, version: '1.2.0' });
+        clock.advance(HELPER_IDLE_POLL_MS);
+        expect((await desk.online()).map((helper) => helper.userName)).toEqual(['Alice']);
+      }
+      // A poll fails (the connection dropped): the helper tries again twice as long after, at most 30 seconds.
+      clock.advance(30_000);
+      expect((await desk.online()).map((helper) => helper.userName)).toEqual(['Alice']);
+      await post('/poll', { token: alice, version: '1.2.0' });
+      // Then it is stopped, and soon counts as stopped.
+      clock.advance(HELPER_ONLINE_MS + 1);
+      expect(await desk.online()).toEqual([]);
     });
   });
 
@@ -191,6 +207,45 @@ describe('music helpers', () => {
       expect(await board.get(GUILD, job.id)).toMatchObject({ status: 'claimed', helper: { userId: ALICE, userName: 'Alice' } });
       // Nobody else gets it.
       expect((await post('/poll', { token: sam })).body.job).toBeNull();
+    });
+
+    it('asks helpers to poll often only while the bot is in a call, or on its way to one', async () => {
+      let inCall = false;
+      const asked: string[] = [];
+      api = new HelperApi({
+        guildId: GUILD, registry, board, store, clock, logger: silentLogger(),
+        inCall: async (guildId) => {
+          asked.push(guildId);
+          return inCall;
+        },
+      });
+      const alice = await setUp(ALICE, 'Alice');
+      expect((await post('/poll', { token: alice })).body).toEqual({ job: null, pollMs: HELPER_IDLE_POLL_MS });
+      expect(asked).toEqual([GUILD]);
+
+      // Someone asks for a call: the bot is on its way. The first song is still half a minute off.
+      inCall = true;
+      expect((await post('/poll', { token: alice })).body).toEqual({ job: null, pollMs: HELPER_POLL_MS });
+      const job = await board.post(GUILD, 'ytsearch1:jelly fish jam', clock());
+      expect((await post('/poll', { token: alice })).body).toMatchObject({ job: { id: job.id }, pollMs: HELPER_POLL_MS });
+
+      // The call is over.
+      inCall = false;
+      expect((await post('/poll', { token: alice })).body).toEqual({ job: null, pollMs: HELPER_IDLE_POLL_MS });
+    });
+
+    it('asks helpers to poll often when it cannot tell whether the bot is in a call, and says so once', async () => {
+      const warnings: string[] = [];
+      const logger = { info: () => undefined, debug: () => undefined, error: () => undefined, warn: (message: string) => void warnings.push(message) };
+      api = new HelperApi({
+        guildId: GUILD, registry, board, store, clock, logger: logger as never,
+        inCall: async () => Promise.reject(new Error('AccessDeniedException: not authorized to perform dynamodb:Query')),
+      });
+      const alice = await setUp(ALICE, 'Alice');
+      expect((await post('/poll', { token: alice })).body).toEqual({ job: null, pollMs: HELPER_POLL_MS });
+      expect((await post('/poll', { token: alice })).body).toEqual({ job: null, pollMs: HELPER_POLL_MS });
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toMatch(/^Could not tell whether the bot is in a call, so helpers are asked to keep polling often: .*AccessDeniedException/);
     });
 
     it("doesn't hand out a job whoever asked has stopped waiting for", async () => {

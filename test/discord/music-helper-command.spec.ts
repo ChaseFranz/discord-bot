@@ -13,6 +13,7 @@ const GUILD = '1083158655429509190';
 const ALICE = '100000000000000001';
 const SAM = '100000000000000002';
 const GUIDE = 'https://github.com/example/nimbus/tree/main/helper';
+const DOWNLOADS = 'https://raw.example/nimbus/main/helper';
 
 describe('/musichelper', () => {
   const clock = fakeClock(Date.UTC(2026, 10, 27, 20, 0, 0));
@@ -23,7 +24,7 @@ describe('/musichelper', () => {
   beforeEach(() => {
     clock.set(Date.UTC(2026, 10, 27, 20, 0, 0));
     registry = new MemoryHelperRegistry();
-    desk = new HelperDesk({ guildId: GUILD, registry, clock, apiUrl: 'https://helper.example/', guideUrl: GUIDE });
+    desk = new HelperDesk({ guildId: GUILD, registry, clock, apiUrl: 'https://helper.example/', guideUrl: GUIDE, downloadUrl: DOWNLOADS });
     replies = [];
   });
 
@@ -39,25 +40,35 @@ describe('/musichelper', () => {
     await musicHelperCommand.execute(context(userId, displayName, action), services(overrides));
     return String(replies.at(-1));
   };
-  /** The setup code shown in a reply, if there is one. */
-  const codeIn = (reply: string) => /node nimbus-music-helper\.mjs (nimbus1\.[\w-]+)/.exec(reply)?.[1];
+  /** The setup code shown in a reply, if there is one: it is in both lines that start a helper, Windows' and everyone else's. */
+  const codeIn = (reply: string) => {
+    const windows = /install\.ps1\)\)\) (nimbus1\.[\w-]+)"/.exec(reply)?.[1];
+    const unix = /install\.sh \| sh -s -- (nimbus1\.[\w-]+)/.exec(reply)?.[1];
+    expect(windows).toBe(unix);
+    return unix;
+  };
 
   it('is shown only to the person who used it', () => {
     expect(musicHelperCommand.ephemeral).toBe(true);
     expect(EPHEMERAL_COMMANDS.has('musichelper')).toBe(true);
   });
 
-  it('gives a first-time user their code with the steps to set the helper up', async () => {
+  it('gives a first-time user their code in the one line that sets the helper up and starts it', async () => {
     const reply = await run(ALICE, 'Alice');
     expect(reply).toContain("**Running now:** nobody's.");
-    expect(reply).toContain('**To set yours up** (once, about two minutes):');
-    expect(reply).toContain('1. Install Node.js 22 or newer: <https://nodejs.org>');
-    expect(reply).toContain(`2. Download \`nimbus-music-helper.mjs\` from <${GUIDE}>`);
+    expect(reply).toContain('**To set yours up** (once, a few minutes), paste the line for your computer into a terminal and press Enter:');
+    const code = codeIn(reply)!;
+    expect(reply).toContain(
+      ['Windows (PowerShell, Terminal or Command Prompt):', '```', `powershell -c "& ([scriptblock]::Create((irm ${DOWNLOADS}/install.ps1))) ${code}"`, '```'].join('\n'),
+    );
+    expect(reply).toContain(['macOS or Linux:', '```', `curl -fsSL ${DOWNLOADS}/install.sh | sh -s -- ${code}`, '```'].join('\n'));
+    expect(reply).toContain('start it again later with the same line, without the code.');
+    expect(reply).toContain(`how to set it up by hand instead: <${GUIDE}>`);
     expect(reply).toContain("don't share it");
 
-    const code = parseSetupCode(codeIn(reply)!)!;
-    expect(code.apiUrl).toBe('https://helper.example/');
-    const token = parseToken(code.token)!;
+    const setup = parseSetupCode(code)!;
+    expect(setup.apiUrl).toBe('https://helper.example/');
+    const token = parseToken(setup.token)!;
     expect(token).toMatchObject({ guildId: GUILD, userId: ALICE });
     expect(secretMatches(token.secret, (await registry.find(GUILD, ALICE))!.secretHash)).toBe(true);
   });
@@ -71,14 +82,38 @@ describe('/musichelper', () => {
     expect(codeIn(status)).toBeUndefined();
     expect(status).toContain(`**Running now:** Alice (checked in <t:${Math.floor((clock() - 3_000) / 1000)}:R>)`);
     expect(status).toContain('**Yours:** set up');
+    // How to start it again, without a code: the one it has is saved.
+    expect(status).toContain(`\npowershell -c "& ([scriptblock]::Create((irm ${DOWNLOADS}/install.ps1)))"\n`);
+    expect(status).toContain(`\ncurl -fsSL ${DOWNLOADS}/install.sh | sh\n`);
+    expect(status).toContain('(Or `node nimbus-music-helper.mjs`, if you set it up by hand.)');
     expect(status).toContain('Lost the code? `/musichelper action:New code` gives you a fresh one.');
     // The code they have still works.
     expect(secretMatches(parseToken(parseSetupCode(first)!.token)!.secret, (await registry.find(GUILD, ALICE))!.secretHash)).toBe(true);
 
     const fresh = await run(ALICE, 'Alice', 'new-code');
-    expect(fresh).toContain('**Your new code** (the old one has stopped working):');
+    expect(fresh).toContain('**Your new code** (the old one has stopped working). Start your helper with the line for your computer:');
     expect(codeIn(fresh)).not.toBe(first);
     expect(secretMatches(parseToken(parseSetupCode(first)!.token)!.secret, (await registry.find(GUILD, ALICE))!.secretHash)).toBe(false);
+  });
+
+  it('fits in one Discord message, with real-length addresses and codes and many helpers running', async () => {
+    desk = new HelperDesk({
+      guildId: GUILD, registry, clock, apiUrl: 'https://abcdefghijklmnopqrstuvwxyz012345.lambda-url.us-east-1.on.aws/', guideUrl: GUIDE,
+      downloadUrl: 'https://raw.githubusercontent.com/ChaseFranz/discord-bot/main/helper',
+    });
+    // Display names are at most 32 characters, and ids 19 digits for years to come.
+    for (let helper = 0; helper < 5; helper++) {
+      const userId = `200000000000000000${helper}`;
+      await desk.issue(userId, `Somebody with a long name, no. ${helper}`);
+      await registry.checkIn(GUILD, userId, clock() - helper * 1_000, '1.2.0');
+    }
+    const someone = '3000000000000000001';
+    const first = await run(someone, 'Someone');
+    expect(codeIn(first)).toBeDefined();
+    expect(first).toContain(', and 2 more');
+    for (const reply of [first, await run(someone, 'Someone', 'new-code'), await run(someone, 'Someone')]) {
+      expect(reply.length).toBeLessThanOrEqual(2_000);
+    }
   });
 
   it('removes a helper, so its code stops working', async () => {

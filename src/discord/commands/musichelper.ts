@@ -5,6 +5,8 @@ import { MUSIC_TURNED_OFF } from '../../music/types.js';
 import type { BotCommand } from '../types.js';
 
 const ACTIONS = { status: 'status', newCode: 'new-code', remove: 'remove' } as const;
+/** Whose helpers are named (the most recently heard from); any more are counted. A reply must fit in one Discord message. */
+const NAMED_RUNNING = 3;
 
 /** Setting up and checking on music helpers. Everything it says is shown only to the person who asked. */
 export const musicHelperCommand: BotCommand = {
@@ -59,20 +61,22 @@ function render(desk: HelperDesk, running: readonly HelperRegistration[], existi
       'While one is running, `/play` and "Nimbus, play…" work for everyone.',
     '',
     running.length > 0
-      ? `**Running now:** ${running.map((helper) => `${helper.userName} (checked in ${ago(helper.lastSeenAt)})`).join(', ')}`
+      ? `**Running now:** ${running
+          .slice(0, NAMED_RUNNING)
+          .map((helper) => `${helper.userName} (checked in ${ago(helper.lastSeenAt)})`)
+          .join(', ')}${running.length > NAMED_RUNNING ? `, and ${running.length - NAMED_RUNNING} more` : ''}`
       : "**Running now:** nobody's.",
   ];
   if (code) {
     lines.push(
       '',
-      existing ? '**Your new code** (the old one has stopped working):' : '**To set yours up** (once, about two minutes):',
-      '1. Install Node.js 22 or newer: <https://nodejs.org>',
-      `2. Download \`nimbus-music-helper.mjs\` from <${desk.guideUrl}>`,
-      '3. In a terminal, in the folder you saved it to, run:',
-      '```',
-      `node nimbus-music-helper.mjs ${code}`,
-      '```',
-      'It remembers the code, so after that `node nimbus-music-helper.mjs` is enough. Keep it running while you want music.',
+      existing
+        ? '**Your new code** (the old one has stopped working). Start your helper with the line for your computer:'
+        : '**To set yours up** (once, a few minutes), paste the line for your computer into a terminal and press Enter:',
+      ...startLines(desk.downloadUrl, code),
+      "It downloads what it needs into a `.nimbus-music-helper` folder (Node.js too, if you don't have it) and starts the helper. " +
+        'Leave its window open while you want music, and start it again later with the same line, without the code.',
+      `What it does, and how to set it up by hand instead: <${desk.guideUrl}>`,
       '',
       "This code is yours alone, so don't share it: whoever has it can play audio through Nimbus as you. " +
         '`/musichelper action:New code` replaces it, and `action:Remove my helper` switches it off.',
@@ -81,11 +85,30 @@ function render(desk: HelperDesk, running: readonly HelperRegistration[], existi
     lines.push(
       '',
       `**Yours:** set up ${ago(existing.createdAt)}, ${existing.lastSeenAt === null ? 'never run yet' : `last running ${ago(existing.lastSeenAt)}`}. ` +
-        'Start it with `node nimbus-music-helper.mjs`.',
-      `Lost the code? \`/musichelper action:New code\` gives you a fresh one. Instructions: <${desk.guideUrl}>`,
+        'Start it with the line for your computer:',
+      ...startLines(desk.downloadUrl),
+      '(Or `node nimbus-music-helper.mjs`, if you set it up by hand.) ' +
+        `Lost the code? \`/musichelper action:New code\` gives you a fresh one. Instructions: <${desk.guideUrl}>`,
     );
   }
   return lines.join('\n');
+}
+
+/**
+ * The line that sets a helper up, or brings it up to date, and starts it (install.ps1 on Windows,
+ * install.sh elsewhere): with the person's code the first time, and without it after that.
+ */
+function startLines(downloadUrl: string, code?: string): string[] {
+  return [
+    'Windows (PowerShell, Terminal or Command Prompt):',
+    '```',
+    `powershell -c "& ([scriptblock]::Create((irm ${downloadUrl}/install.ps1)))${code ? ` ${code}` : ''}"`,
+    '```',
+    'macOS or Linux:',
+    '```',
+    `curl -fsSL ${downloadUrl}/install.sh | sh${code ? ` -s -- ${code}` : ''}`,
+    '```',
+  ];
 }
 
 /** A moment as Discord shows it ("3 minutes ago"), in the reader's own clock. */

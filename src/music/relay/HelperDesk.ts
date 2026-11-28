@@ -2,12 +2,21 @@ import type { Clock } from '../../util/time.js';
 import type { AudioRelayStore, HelperRegistration, HelperRegistry, MusicJobBoard } from './ports.js';
 import { formatSetupCode, hashSecret, newSecret } from './tokens.js';
 
-/** How often a helper asks whether there is anything to fetch. */
+/** How often a helper asks whether there is anything to fetch while the bot is in a call, or on its way to one. */
 export const HELPER_POLL_MS = 2_000;
+/**
+ * How often it asks the rest of the time. Songs are only asked for in calls, and a call takes
+ * longer than this to get going (the voice task is started when someone asks for it, and is about
+ * half a minute from playing anything), so helpers are asking often again before a song is wanted.
+ */
+export const HELPER_IDLE_POLL_MS = 15_000;
 /** A helper's check-ins are written down at most this often (each one is a database write). */
 export const CHECK_IN_EVERY_MS = 10_000;
-/** A helper counts as running if it checked in this recently. */
-export const HELPER_ONLINE_MS = 25_000;
+/**
+ * A helper counts as running if it checked in this recently. Long enough for a poll that failed
+ * while it was idle: the helper then waits twice as long, up to 30 seconds, before the next one.
+ */
+export const HELPER_ONLINE_MS = 60_000;
 /** How often the bot says it is still listening to a live stream it is playing. */
 export const LISTENING_EVERY_MS = 20_000;
 /**
@@ -25,6 +34,8 @@ export interface HelperDeskDeps {
   apiUrl: string;
   /** Where the helper and its instructions can be downloaded. */
   guideUrl: string;
+  /** Where the helper's files are, its installers (install.ps1 and install.sh) among them. */
+  downloadUrl: string;
 }
 
 /** The bot's view of music helpers: who is running one, and handing out the codes to set one up. */
@@ -33,6 +44,10 @@ export class HelperDesk {
 
   get guideUrl(): string {
     return this.deps.guideUrl;
+  }
+
+  get downloadUrl(): string {
+    return this.deps.downloadUrl;
   }
 
   /** People whose helper is running right now, the most recently heard from first. */

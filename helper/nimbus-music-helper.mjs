@@ -11,6 +11,9 @@
  *   node nimbus-music-helper.mjs            after that
  *   node nimbus-music-helper.mjs --forget   forget the saved code
  *
+ * Or let install.sh (macOS, Linux) or install.ps1 (Windows) set it up and start it: that is the
+ * line /musichelper gives, and it brings Node.js too when there isn't one.
+ *
  * It needs Node.js 22 or newer and nothing else: it downloads yt-dlp itself, and ffmpeg (which
  * live streams need) unless you have one, into ~/.nimbus-music-helper. It only ever makes outgoing
  * requests, to the address in your code, to YouTube (through yt-dlp) and to GitHub (to download
@@ -23,7 +26,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 /** How much audio goes up in each request: small enough that playback starts within a second or two. */
 const CHUNK_BYTES = 256 * 1024;
 /**
@@ -54,6 +57,8 @@ const FFMPEG_BUILDS = {
 };
 
 const home = process.env.NIMBUS_HELPER_HOME || join(homedir(), '.nimbus-music-helper');
+/** Started by install.sh or install.ps1 (the line /musichelper gives) rather than as a file by hand: hints say how to start it that way. */
+const viaInstaller = process.env.NIMBUS_HELPER_INSTALLER === '1';
 const configFile = join(home, 'config.json');
 const running = new Map();
 let stopping = false;
@@ -92,11 +97,19 @@ function loadConfig(argument) {
     if (!parsed) fail("That doesn't look like a helper code. Run /musichelper in Discord and copy the whole line it gives you.");
     // Readable by you only: the code lets its holder play audio through Nimbus as you.
     writeFileSync(configFile, JSON.stringify(parsed, null, 2), { mode: 0o600 });
-    say(`Saved your code in ${configFile}. From now on, "node nimbus-music-helper.mjs" is enough.`);
+    say(
+      viaInstaller
+        ? `Saved your code in ${configFile}. To start the helper again later, run the same line without the code at the end.`
+        : `Saved your code in ${configFile}. From now on, "node nimbus-music-helper.mjs" is enough.`,
+    );
     return parsed;
   }
   if (!existsSync(configFile)) {
-    fail('No helper code saved yet. In Discord, run /musichelper, then start this with the code it gives you:\n\n  node nimbus-music-helper.mjs <code>');
+    fail(
+      viaInstaller
+        ? 'No helper code saved yet. In Discord, run /musichelper and run the line it gives you, with your code at the end.'
+        : 'No helper code saved yet. In Discord, run /musichelper, then start this with the code it gives you:\n\n  node nimbus-music-helper.mjs <code>',
+    );
   }
   try {
     const saved = JSON.parse(readFileSync(configFile, 'utf8'));

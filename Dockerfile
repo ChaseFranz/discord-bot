@@ -30,5 +30,10 @@ ENV NODE_ENV=production
 COPY --from=build /app/package.json ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
+# Calls can't be heard or played without the native part of @discordjs/opus, which its install
+# script fetches or builds (allowed by allowScripts in package.json; npm is starting to skip the
+# install scripts of dependencies that aren't). If it is missing, stop the build here rather than
+# ship a voice task that fails in calls.
+RUN node -e "new (require('@discordjs/opus').OpusEncoder)(48000, 2)"
 USER node
 CMD ["node", "dist/aws/voiceTask.js"]

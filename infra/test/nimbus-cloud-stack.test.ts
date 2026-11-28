@@ -148,10 +148,20 @@ test('gives music helpers an address that can reach only their own records, and 
   const policies = Object.values(cloud.findResources('AWS::IAM::Policy')).filter((policy) => JSON.stringify(policy.Properties.Roles).includes('Helper'));
   const statements = policies.flatMap((policy) => policy.Properties.PolicyDocument.Statement as Array<{ Action: string | string[]; Condition?: unknown }>);
   const table = statements.filter((statement) => [statement.Action].flat().some((action) => action.startsWith('dynamodb:')));
-  assert.equal(table.length, 1);
+  assert.equal(table.length, 2);
   assert.deepEqual(table[0]!.Action, ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:UpdateItem']);
   assert.deepEqual(table[0]!.Condition, {
     'ForAllValues:StringEquals': { 'dynamodb:LeadingKeys': ['HELPER#100000000000000002', 'MUSICJOB#100000000000000002'] },
+  });
+  // And whether the bot is in a call: only the three fields of the voice task's record that say so,
+  // by a Query that has to name them (not who is in the call, or anything else).
+  assert.equal(table[1]!.Action, 'dynamodb:Query');
+  assert.deepEqual(table[1]!.Condition, {
+    'ForAllValues:StringEquals': {
+      'dynamodb:LeadingKeys': ['VOICE#100000000000000002'],
+      'dynamodb:Attributes': ['pk', 'sk', 'status', 'startedAt', 'heartbeatAt'],
+    },
+    StringEquals: { 'dynamodb:Select': 'SPECIFIC_ATTRIBUTES' },
   });
   // In the bucket: writing under music/ only (that is what its upload forms are signed with). Nothing
   // else: no reading or deleting what was uploaded, and no secrets.

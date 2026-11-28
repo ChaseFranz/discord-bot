@@ -44,7 +44,7 @@ describe('the music helper script', () => {
   /** Sets the service up, with upload forms that last `expiresInSeconds`. */
   const service = (expiresInSeconds?: number) => {
     store = new MemoryAudioRelayStore(`${address}/upload`, expiresInSeconds);
-    desk = new HelperDesk({ guildId: GUILD, registry, clock: Date.now, apiUrl: address, guideUrl: 'https://example.com/helper' });
+    desk = new HelperDesk({ guildId: GUILD, registry, clock: Date.now, apiUrl: address, guideUrl: 'https://example.com/helper', downloadUrl: 'https://example.com/files' });
     api = new HelperApi({ guildId: GUILD, registry, board, store, clock: Date.now, logger: silentLogger(), pollMs: 50 });
     source = new HelperTrackSource({ guildId: GUILD, desk, board, store, clock: Date.now, checkEveryMs: 20 });
   };
@@ -146,6 +146,8 @@ describe('the music helper script', () => {
   it('saves its code, is seen as running, and relays a song byte for byte', async () => {
     await connected();
     await until('the helper to say it is connected', () => output.includes('Connected to Nimbus.'));
+    // Started as a file, it says how to start it again as a file (the installers' own wording is tested with them).
+    expect(output).toContain('From now on, "node nimbus-music-helper.mjs" is enough.');
     // The code is kept for next time, readable by its owner only.
     const saved = join(home, 'config.json');
     expect(JSON.parse(readFileSync(saved, 'utf8'))).toMatchObject({ token: expect.stringContaining(`${GUILD}.${ALICE}.`) });

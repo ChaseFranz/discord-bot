@@ -1,6 +1,6 @@
-import type { Logger } from '../../logging/logger.js';
+import { describeError, type Logger } from '../../logging/logger.js';
 import type { Clock } from '../../util/time.js';
-import { CHECK_IN_EVERY_MS, HELPER_POLL_MS, UNHEARD_MS } from './HelperDesk.js';
+import { CHECK_IN_EVERY_MS, HELPER_IDLE_POLL_MS, HELPER_POLL_MS, UNHEARD_MS } from './HelperDesk.js';
 import type { AudioRelayStore, HelperRegistry, MusicJob, MusicJobBoard, MusicJobReport } from './ports.js';
 import { parseToken, secretMatches } from './tokens.js';
 
@@ -12,8 +12,16 @@ export interface HelperApiDeps {
   store: AudioRelayStore;
   clock: Clock;
   logger: Logger;
-  /** How long helpers are told to wait between polls (default HELPER_POLL_MS). */
+  /** How long helpers are told to wait between polls while the bot is in a call (default HELPER_POLL_MS). */
   pollMs?: number;
+  /** How long the rest of the time (default HELPER_IDLE_POLL_MS). */
+  idlePollMs?: number;
+  /**
+   * Whether the bot is in a call in the server, or on its way to one (on AWS: its voice task is
+   * starting or running). Songs are only asked for then, so only then do helpers need to ask for
+   * work often. Without it, they always do.
+   */
+  inCall?: (guildId: string) => Promise<boolean>;
 }
 
 export interface HelperApiRequest {
@@ -44,13 +52,18 @@ export const NOBODY_LISTENING = 'nobody was listening any more';
  *   POST /report  { token, jobId, kind, ... }      -> { ok }
  *   POST /upload  { token, jobId }                 -> { upload: null | { ... } }
  *
- * Polling is also how the bot knows a helper is running: each poll counts as a check-in.
+ * Polling is also how the bot knows a helper is running: each poll counts as a check-in. `pollMs`
+ * says how long to wait before the next one: not long while the bot is in a call, longer otherwise
+ * (see HELPER_IDLE_POLL_MS).
  *
  * `ok: false` and `upload: null` both mean the job is over as far as the bot is concerned (it gave
  * up on it, the song was skipped, or it is a live stream nobody is listening to any more), and the
  * helper stops sending.
  */
 export class HelperApi {
+  /** Whether it has said that it can't tell if the bot is in a call (once is enough). */
+  private warnedInCall = false;
+
   constructor(private readonly deps: HelperApiDeps) {}
 
   async handle(request: HelperApiRequest): Promise<HelperApiResponse> {
@@ -78,11 +91,25 @@ export class HelperApi {
       const version = typeof body.version === 'string' ? body.version.slice(0, 40) : 'unknown';
       await registry.checkIn(guildId, helper.userId, now, version);
     }
-    const job = await board.claim(guildId, helper, now, now - JOB_FRESH_MS);
-    const pollMs = this.deps.pollMs ?? HELPER_POLL_MS;
+    const [job, inCall] = await Promise.all([board.claim(guildId, helper, now, now - JOB_FRESH_MS), this.callUnderWay()]);
+    const pollMs = inCall ? (this.deps.pollMs ?? HELPER_POLL_MS) : (this.deps.idlePollMs ?? HELPER_IDLE_POLL_MS);
     if (!job) return { status: 200, body: { job: null, pollMs } };
     this.deps.logger.info(`Music helper of ${helper.userName} took job ${job.id}.`);
     return { status: 200, body: { job: { id: job.id, target: job.target, upload: await store.uploadTarget(guildId, job.id) }, pollMs } };
+  }
+
+  /** Whether the bot is in a call, or on its way to one. When that can't be told, as if it were: no song should wait. */
+  private async callUnderWay(): Promise<boolean> {
+    if (!this.deps.inCall) return true;
+    try {
+      return await this.deps.inCall(this.deps.guildId);
+    } catch (error) {
+      if (!this.warnedInCall) {
+        this.warnedInCall = true;
+        this.deps.logger.warn(`Could not tell whether the bot is in a call, so helpers are asked to keep polling often: ${describeError(error)}`);
+      }
+      return true;
+    }
   }
 
   private async report(helper: { userId: string; userName: string }, body: Record<string, unknown>): Promise<HelperApiResponse> {
